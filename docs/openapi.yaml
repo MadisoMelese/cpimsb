@@ -1,0 +1,1991 @@
+openapi: 3.0.3
+
+info:
+  title: CPIMS API
+  description: |
+    Coffee Production and Inventory Management System.
+
+    ## Core principles
+    - Every KG movement is recorded as an immutable stock ledger entry
+    - Every financial transaction uses decimal arithmetic (no floats)
+    - All critical mutations require an `operationId` for idempotency
+    - Authorization is enforced server-side; never trust client-supplied roles
+    - Stock ledger entries are append-only — corrections via reversal entries only
+    - Reconciliation periods become locked after session close — no backdating
+
+  version: "1.0.0"
+  contact:
+    name: CPIMS Support
+
+servers:
+  - url: http://localhost:4000/api
+    description: Local development
+  - url: https://api.cpims.example.com/api
+    description: Production
+
+security:
+  - BearerAuth: []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  # ── Shared response schemas ─────────────────────────────────────────────────
+
+  schemas:
+
+    ApiSuccess:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          example: true
+
+    ApiError:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: INSUFFICIENT_BATCH_STOCK
+            message:
+              type: string
+            details:
+              type: object
+        requestId:
+          type: string
+          format: uuid
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+        totalPages:
+          type: integer
+        hasNextPage:
+          type: boolean
+        hasPrevPage:
+          type: boolean
+
+    # ── Auth ────────────────────────────────────────────────────────────────
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: admin
+        password:
+          type: string
+          format: password
+        deviceId:
+          type: string
+          format: uuid
+
+    LoginResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccess'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                accessToken:
+                  type: string
+                refreshToken:
+                  type: string
+                user:
+                  $ref: '#/components/schemas/User'
+
+    # ── User ────────────────────────────────────────────────────────────────
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [BOSS, ADMIN, STOREKEEPER, VERIFIER]
+        fullName:
+          type: string
+        isActive:
+          type: boolean
+        lastLoginAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateUserRequest:
+      type: object
+      required: [username, email, password, role, fullName]
+      properties:
+        username:
+          type: string
+          minLength: 2
+          maxLength: 100
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        role:
+          type: string
+          enum: [BOSS, ADMIN, STOREKEEPER, VERIFIER]
+        fullName:
+          type: string
+
+    # ── Agent ────────────────────────────────────────────────────────────────
+
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        phone:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        isSupplier:
+          type: boolean
+        isCustomer:
+          type: boolean
+        isActive:
+          type: boolean
+
+    # ── Location ─────────────────────────────────────────────────────────────
+
+    Location:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        isActive:
+          type: boolean
+
+    # ── CoffeeType ───────────────────────────────────────────────────────────
+
+    CoffeeType:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        grade:
+          type: string
+          nullable: true
+        state:
+          type: string
+          enum: [WET, DRY, HULLED, SORTED, GRADED]
+
+    # ── Purchase ─────────────────────────────────────────────────────────────
+
+    PurchaseItem:
+      type: object
+      required: [coffeeTypeId, quantityKg, unitPriceKg]
+      properties:
+        coffeeTypeId:
+          type: string
+          format: uuid
+        quantityKg:
+          type: number
+          format: decimal
+          minimum: 0.001
+          example: 500.000
+        unitPriceKg:
+          type: number
+          format: decimal
+          minimum: 0
+          example: 45.00
+        moistureContent:
+          type: number
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    CreatePurchaseRequest:
+      type: object
+      required: [agentId, locationId, purchaseDate, items]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        purchaseDate:
+          type: string
+          format: date
+        creditTerms:
+          type: string
+          enum: [CASH, NET_7, NET_14, NET_30, NET_60, CUSTOM]
+          default: CASH
+        creditDueDays:
+          type: integer
+          nullable: true
+        currency:
+          type: string
+          default: KES
+        notes:
+          type: string
+          nullable: true
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PurchaseItem'
+        operationId:
+          type: string
+          format: uuid
+          description: Client-generated UUID for idempotency
+        deviceId:
+          type: string
+          format: uuid
+
+    ApprovePurchaseRequest:
+      type: object
+      required: [operationId]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+          description: |
+            Unique UUID generated by the client. If the same operationId is submitted
+            multiple times, the approval is applied exactly once (idempotent).
+
+    Purchase:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        purchaseNumber:
+          type: string
+          example: PUR-000001
+        agentId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        purchaseDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [DRAFT, SUBMITTED, VERIFIED, APPROVED, REJECTED]
+        creditTerms:
+          type: string
+          enum: [CASH, NET_7, NET_14, NET_30, NET_60, CUSTOM]
+        creditDueDate:
+          type: string
+          format: date
+          nullable: true
+        version:
+          type: integer
+          description: Optimistic concurrency version
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseItem'
+
+    # ── Batch ─────────────────────────────────────────────────────────────────
+
+    Batch:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        batchCode:
+          type: string
+          example: BAT-000001
+        coffeeTypeId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        originalKg:
+          type: number
+          format: decimal
+          description: "Original quantity — immutable after creation"
+        remainingKg:
+          type: number
+          format: decimal
+          description: "Current remaining quantity — always >= 0"
+        costPerKg:
+          type: number
+          format: decimal
+          description: "Cost basis per KG, allocated at time of receipt or processing"
+        status:
+          type: string
+          enum: [ACTIVE, CONSUMED, PARTIALLY_CONSUMED, TRANSFERRED, ADJUSTED]
+        processingRunId:
+          type: string
+          format: uuid
+          nullable: true
+          description: "Set when this batch was produced by a processing run"
+        version:
+          type: integer
+
+    # ── Stock Ledger ──────────────────────────────────────────────────────────
+
+    StockLedgerEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        batchId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        quantityKg:
+          type: number
+          format: decimal
+          description: "Positive = inbound, negative = outbound"
+        movementType:
+          type: string
+          enum:
+            - PURCHASE_RECEIPT
+            - PROCESSING_CONSUMPTION
+            - PROCESSING_OUTPUT
+            - SALE_CONSUMPTION
+            - TRANSFER_OUT
+            - TRANSFER_IN
+            - STOCK_ADJUSTMENT_INCREASE
+            - STOCK_ADJUSTMENT_DECREASE
+            - REVERSAL
+        operationId:
+          type: string
+          description: "Unique idempotency key — ledger entries with the same operationId cannot be duplicated"
+        postedAt:
+          type: string
+          format: date-time
+          description: "Immutable after posting — cannot be changed or deleted"
+
+    # ── Processing ────────────────────────────────────────────────────────────
+
+    ProcessingInput:
+      type: object
+      required: [batchId, quantityKg]
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        quantityKg:
+          type: number
+          format: decimal
+          minimum: 0.001
+
+    ProcessingOutput:
+      type: object
+      required: [coffeeTypeId, locationId, quantityKg]
+      properties:
+        coffeeTypeId:
+          type: string
+          format: uuid
+        locationId:
+          type: string
+          format: uuid
+        quantityKg:
+          type: number
+          format: decimal
+          minimum: 0.001
+          description: "Total output KG across all outputs must not exceed total input KG"
+        notes:
+          type: string
+          nullable: true
+
+    CompleteProcessingRequest:
+      type: object
+      required: [operationId, outputs]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        outputs:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ProcessingOutput'
+
+    ProcessingRun:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        runCode:
+          type: string
+          example: PRO-000001
+        status:
+          type: string
+          enum: [DRAFT, IN_PROGRESS, COMPLETED, CANCELLED]
+        totalInputKg:
+          type: number
+          format: decimal
+          nullable: true
+        totalOutputKg:
+          type: number
+          format: decimal
+          nullable: true
+        lossKg:
+          type: number
+          format: decimal
+          nullable: true
+        lossPct:
+          type: number
+          format: decimal
+          nullable: true
+        lossOutOfRange:
+          type: boolean
+        processingCost:
+          type: number
+          format: decimal
+          nullable: true
+
+    # ── Sale ─────────────────────────────────────────────────────────────────
+
+    SaleItem:
+      type: object
+      required: [batchId, quantityKg, unitSalePrice]
+      properties:
+        batchId:
+          type: string
+          format: uuid
+          description: "Exact batch to consume — batch-specific costing strategy"
+        quantityKg:
+          type: number
+          format: decimal
+          minimum: 0.001
+        unitSalePrice:
+          type: number
+          format: decimal
+          minimum: 0
+        notes:
+          type: string
+          nullable: true
+
+    CreateSaleRequest:
+      type: object
+      required: [agentId, saleDate, items]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        saleDate:
+          type: string
+          format: date
+        creditTerms:
+          type: string
+          enum: [CASH, NET_7, NET_14, NET_30, NET_60, CUSTOM]
+          default: CASH
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SaleItem'
+        operationId:
+          type: string
+          format: uuid
+
+    Sale:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        saleNumber:
+          type: string
+          example: SAL-000001
+        status:
+          type: string
+          enum: [DRAFT, CONFIRMED, CANCELLED]
+        totalKg:
+          type: number
+          format: decimal
+          nullable: true
+        totalSaleAmount:
+          type: number
+          format: decimal
+          nullable: true
+        totalCostAmount:
+          type: number
+          format: decimal
+          nullable: true
+        grossMargin:
+          type: number
+          format: decimal
+          nullable: true
+        version:
+          type: integer
+
+    # ── Payment ───────────────────────────────────────────────────────────────
+
+    CreatePaymentRequest:
+      type: object
+      required: [paymentMethod, amount, paymentDate, operationId]
+      properties:
+        paymentMethod:
+          type: string
+          enum: [CASH, BANK_TRANSFER, MOBILE_MONEY, CHEQUE, OTHER]
+        amount:
+          type: number
+          format: decimal
+          minimum: 0.01
+          description: "Must not exceed remaining balance — overpayment is rejected"
+        paymentDate:
+          type: string
+          format: date
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+          description: "Set by Boss/Admin only"
+        reference:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        operationId:
+          type: string
+          format: uuid
+          description: "Idempotency key — submitting the same operationId twice has no effect"
+
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        paymentNumber:
+          type: string
+        paymentType:
+          type: string
+          enum: [PURCHASE_PAYMENT, SALE_RECEIPT]
+        paymentMethod:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, COMPLETED, VOIDED]
+        amount:
+          type: number
+          format: decimal
+        paymentDate:
+          type: string
+          format: date
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+
+    # ── Reconciliation ────────────────────────────────────────────────────────
+
+    CreateReconciliationSessionRequest:
+      type: object
+      required: [periodStart, periodEnd]
+      properties:
+        locationId:
+          type: string
+          format: uuid
+          nullable: true
+        periodStart:
+          type: string
+          format: date
+        periodEnd:
+          type: string
+          format: date
+        notes:
+          type: string
+          nullable: true
+
+    ReconciliationSession:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionCode:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, PENDING_ADJUSTMENTS, CLOSED]
+        periodStart:
+          type: string
+          format: date
+        periodEnd:
+          type: string
+          format: date
+        closedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: "Once closed, the period is locked — no backdated stock entries allowed"
+
+    # ── Sync ──────────────────────────────────────────────────────────────────
+
+    SyncOperation:
+      type: object
+      required: [operationId, entityType, entityId, operationType, baseVersion, payload, deviceId, createdAt]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+          description: "Client-generated UUID — globally unique, used for idempotency"
+        entityType:
+          type: string
+          example: purchase
+        entityId:
+          type: string
+          format: uuid
+        operationType:
+          type: string
+          enum: [CREATE, UPDATE, DELETE, APPROVE, CONFIRM, COMPLETE, VOID]
+        baseVersion:
+          type: integer
+          description: "Version the client based this operation on — used for conflict detection"
+        payload:
+          type: object
+          additionalProperties: true
+        deviceId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    SyncPushRequest:
+      type: object
+      required: [operations]
+      properties:
+        operations:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SyncOperation'
+
+    SyncConflict:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        entityType:
+          type: string
+        entityId:
+          type: string
+          format: uuid
+        localVersion:
+          type: integer
+        serverVersion:
+          type: integer
+        localPayload:
+          type: object
+        serverPayload:
+          type: object
+        deviceId:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, RESOLVED, REJECTED]
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    ResolveConflictRequest:
+      type: object
+      required: [resolution]
+      properties:
+        resolution:
+          type: string
+          enum: [USE_LOCAL, USE_SERVER, MANUAL]
+          description: |
+            - USE_LOCAL: Apply the device's version
+            - USE_SERVER: Keep the server version (discard device changes)
+            - MANUAL: Apply mergedPayload as the authoritative state
+        mergedPayload:
+          type: object
+          nullable: true
+          description: "Required when resolution = MANUAL"
+        notes:
+          type: string
+          description: "Required — audit trail for the resolution decision"
+
+  # ── Parameters ───────────────────────────────────────────────────────────────
+
+  parameters:
+    IdParam:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    PageParam:
+      in: query
+      name: page
+      schema:
+        type: integer
+        default: 1
+
+    LimitParam:
+      in: query
+      name: limit
+      schema:
+        type: integer
+        default: 50
+        maximum: 200
+
+    StartDateParam:
+      in: query
+      name: startDate
+      schema:
+        type: string
+        format: date
+
+    EndDateParam:
+      in: query
+      name: endDate
+      schema:
+        type: string
+        format: date
+
+  # ── Responses ─────────────────────────────────────────────────────────────────
+
+  responses:
+    Unauthorized:
+      description: Authentication required or token expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            success: false
+            error:
+              code: AUTHENTICATION_REQUIRED
+              message: Authorization header missing or malformed
+    Forbidden:
+      description: Insufficient role permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    UnprocessableEntity:
+      description: Business rule violation or validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          examples:
+            insufficientStock:
+              value:
+                success: false
+                error:
+                  code: INSUFFICIENT_BATCH_STOCK
+                  message: "Requested 150 KG exceeds available 100 KG in batch BAT-000001"
+                  details:
+                    batchId: "uuid"
+                    requested: 150
+                    available: 100
+            lockedPeriod:
+              value:
+                success: false
+                error:
+                  code: LOCKED_PERIOD
+                  message: "Cannot post entry for 2026-09-05 — period is locked"
+            overpayment:
+              value:
+                success: false
+                error:
+                  code: OVERPAYMENT_NOT_ALLOWED
+                  message: "Payment of 1000 exceeds remaining balance of 500"
+    Conflict:
+      description: Idempotency conflict or duplicate entry
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      summary: Health check
+      security: []
+      tags: [System]
+      responses:
+        "200":
+          description: Service is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  # ── Auth ────────────────────────────────────────────────────────────────────
+
+  /auth/login:
+    post:
+      summary: Authenticate user
+      security: []
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      summary: Refresh access token (rotates refresh token)
+      security: []
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          description: New token pair issued
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      summary: Revoke refresh token
+      tags: [Auth]
+      responses:
+        "200":
+          description: Logged out
+
+  /auth/me:
+    get:
+      summary: Get current authenticated user
+      tags: [Auth]
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/User'
+
+  # ── Users ────────────────────────────────────────────────────────────────────
+
+  /users:
+    get:
+      summary: List users
+      tags: [Users]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        "200":
+          description: User list
+        "403":
+          $ref: '#/components/responses/Forbidden'
+    post:
+      summary: Create user (Boss/Admin only)
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        "201":
+          description: User created
+        "403":
+          $ref: '#/components/responses/Forbidden'
+
+  /users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get user by ID
+      tags: [Users]
+      responses:
+        "200":
+          description: User
+        "404":
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update user
+      tags: [Users]
+      responses:
+        "200":
+          description: Updated
+
+  # ── Agents ───────────────────────────────────────────────────────────────────
+
+  /agents:
+    get:
+      summary: List agents/suppliers/customers
+      tags: [Agents]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - in: query
+          name: isSupplier
+          schema:
+            type: boolean
+        - in: query
+          name: isCustomer
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Agent list
+    post:
+      summary: Create agent
+      tags: [Agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code:
+                  type: string
+                name:
+                  type: string
+                isSupplier:
+                  type: boolean
+                isCustomer:
+                  type: boolean
+      responses:
+        "201":
+          description: Created
+
+  /agents/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get agent
+      tags: [Agents]
+      responses:
+        "200":
+          description: Agent
+    patch:
+      summary: Update agent
+      tags: [Agents]
+      responses:
+        "200":
+          description: Updated
+    delete:
+      summary: Deactivate agent
+      tags: [Agents]
+      responses:
+        "200":
+          description: Deactivated
+
+  # ── Locations ─────────────────────────────────────────────────────────────────
+
+  /locations:
+    get:
+      summary: List locations
+      tags: [Reference]
+      responses:
+        "200":
+          description: Locations
+    post:
+      summary: Create location (Boss/Admin only)
+      tags: [Reference]
+      responses:
+        "201":
+          description: Created
+
+  # ── Coffee Types ──────────────────────────────────────────────────────────────
+
+  /coffee-types:
+    get:
+      summary: List coffee types/grades
+      tags: [Reference]
+      parameters:
+        - in: query
+          name: state
+          schema:
+            type: string
+            enum: [WET, DRY, HULLED, SORTED, GRADED]
+      responses:
+        "200":
+          description: Coffee types
+    post:
+      summary: Create coffee type (Boss/Admin only)
+      tags: [Reference]
+      responses:
+        "201":
+          description: Created
+
+  # ── Purchases ─────────────────────────────────────────────────────────────────
+
+  /purchases:
+    get:
+      summary: List purchases
+      tags: [Purchases]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [DRAFT, SUBMITTED, VERIFIED, APPROVED, REJECTED]
+        - in: query
+          name: agentId
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/StartDateParam'
+        - $ref: '#/components/parameters/EndDateParam'
+      responses:
+        "200":
+          description: Paginated purchase list
+    post:
+      summary: Create purchase (DRAFT)
+      tags: [Purchases]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePurchaseRequest'
+      responses:
+        "201":
+          description: Purchase created in DRAFT status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Purchase'
+
+  /purchases/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get purchase with items and batches
+      tags: [Purchases]
+      responses:
+        "200":
+          description: Purchase detail
+        "404":
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update purchase (DRAFT/REJECTED only)
+      tags: [Purchases]
+      responses:
+        "200":
+          description: Updated
+
+  /purchases/{id}/submit:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: Submit for verification (DRAFT → SUBMITTED)
+      tags: [Purchases]
+      responses:
+        "200":
+          description: Submitted
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /purchases/{id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: Verify purchase (SUBMITTED → VERIFIED) — Boss/Admin/Verifier
+      tags: [Purchases]
+      responses:
+        "200":
+          description: Verified
+
+  /purchases/{id}/approve:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: |
+        Approve purchase and create stock — ATOMIC (Boss/Admin only).
+
+        Creates batches and stock ledger PURCHASE_RECEIPT entries in a single
+        serializable transaction. Idempotent — submitting the same operationId
+        twice returns the current state without creating duplicate inventory.
+      tags: [Purchases]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovePurchaseRequest'
+      responses:
+        "200":
+          description: Approved — batches and ledger entries created
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /purchases/{id}/reject:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: Reject purchase — Boss/Admin only
+      tags: [Purchases]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Rejected
+
+  /purchases/{id}/payments:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get payments for a purchase with running balance
+      tags: [Payments]
+      responses:
+        "200":
+          description: Payment summary and history
+    post:
+      summary: |
+        Record purchase payment (AP). Overpayment is rejected.
+        Idempotent via operationId.
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+      responses:
+        "201":
+          description: Payment recorded
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  # ── Inventory ─────────────────────────────────────────────────────────────────
+
+  /inventory:
+    get:
+      summary: Stock overview grouped by location and coffee type
+      tags: [Inventory]
+      parameters:
+        - in: query
+          name: locationId
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Stock overview
+
+  /inventory/batches:
+    get:
+      summary: List batches with filters
+      tags: [Inventory]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - in: query
+          name: locationId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: coffeeTypeId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [ACTIVE, CONSUMED, PARTIALLY_CONSUMED, TRANSFERRED, ADJUSTED]
+      responses:
+        "200":
+          description: Batch list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Batch'
+                      pagination:
+                        $ref: '#/components/schemas/Pagination'
+
+  /inventory/batches/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get batch with full lineage (origin, processing history, sales)
+      tags: [Inventory]
+      responses:
+        "200":
+          description: Batch detail with lineage
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  /inventory/ledger:
+    get:
+      summary: |
+        Stock ledger — immutable, append-only inventory event log.
+        Entries cannot be modified or deleted after posting.
+      tags: [Inventory]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - in: query
+          name: batchId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: movementType
+          schema:
+            type: string
+        - $ref: '#/components/parameters/StartDateParam'
+        - $ref: '#/components/parameters/EndDateParam'
+      responses:
+        "200":
+          description: Ledger entries
+
+  /inventory/transfers:
+    post:
+      summary: Transfer batches between locations — atomic, idempotent
+      tags: [Inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromLocationId, toLocationId, transferDate, operationId, lines]
+              properties:
+                fromLocationId:
+                  type: string
+                  format: uuid
+                toLocationId:
+                  type: string
+                  format: uuid
+                transferDate:
+                  type: string
+                  format: date
+                operationId:
+                  type: string
+                  format: uuid
+                lines:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [fromBatchId, quantityKg]
+                    properties:
+                      fromBatchId:
+                        type: string
+                        format: uuid
+                      quantityKg:
+                        type: number
+                        format: decimal
+      responses:
+        "201":
+          description: Transfer created
+
+  /inventory/adjustments:
+    post:
+      summary: Stock adjustment — Boss/Admin only. Idempotent via operationId.
+      tags: [Inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [batchId, direction, quantityKg, reason, operationId]
+              properties:
+                batchId:
+                  type: string
+                  format: uuid
+                direction:
+                  type: string
+                  enum: [INCREASE, DECREASE]
+                quantityKg:
+                  type: number
+                  format: decimal
+                reason:
+                  type: string
+                operationId:
+                  type: string
+                  format: uuid
+      responses:
+        "201":
+          description: Adjustment created
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  # ── Processing ────────────────────────────────────────────────────────────────
+
+  /processing:
+    get:
+      summary: List processing runs
+      tags: [Processing]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [DRAFT, IN_PROGRESS, COMPLETED, CANCELLED]
+      responses:
+        "200":
+          description: Processing runs
+    post:
+      summary: Create processing run (DRAFT)
+      tags: [Processing]
+      responses:
+        "201":
+          description: Run created
+
+  /processing/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get processing run with inputs, outputs, and batch lineage
+      tags: [Processing]
+      responses:
+        "200":
+          description: Processing run detail
+
+  /processing/{id}/inputs:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: Add input batches to a processing run
+      tags: [Processing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inputs]
+              properties:
+                inputs:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: '#/components/schemas/ProcessingInput'
+      responses:
+        "200":
+          description: Inputs added
+
+  /processing/{id}/complete:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: |
+        Complete processing run — ATOMIC.
+
+        1. Locks all input batches (SELECT FOR UPDATE)
+        2. Validates output KG does not exceed input KG
+        3. Consumes input batches → PROCESSING_CONSUMPTION ledger entries
+        4. Creates output batches with proportionally allocated cost
+        5. Creates PROCESSING_OUTPUT ledger entries
+        6. Records full batch lineage (which input → which output)
+        7. Calculates loss KG and % — flags if outside configured range
+
+        Idempotent via operationId.
+      tags: [Processing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteProcessingRequest'
+      responses:
+        "200":
+          description: Processing completed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccess'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProcessingRun'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  # ── Sales ─────────────────────────────────────────────────────────────────────
+
+  /sales:
+    get:
+      summary: List sales
+      tags: [Sales]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [DRAFT, CONFIRMED, CANCELLED]
+      responses:
+        "200":
+          description: Sales list
+    post:
+      summary: Create sale (DRAFT)
+      tags: [Sales]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSaleRequest'
+      responses:
+        "201":
+          description: Sale created
+
+  /sales/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get sale with items, cost basis, and payments
+      tags: [Sales]
+      responses:
+        "200":
+          description: Sale detail
+
+  /sales/{id}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: |
+        Confirm sale — ATOMIC.
+
+        1. Locks referenced batches (SELECT FOR UPDATE)
+        2. Validates all batch quantities
+        3. Captures cost basis from each batch at point of sale (specific batch costing)
+        4. Consumes from batches → SALE_CONSUMPTION ledger entries
+        5. Calculates gross margin per line item
+        6. Updates sale totals
+
+        Idempotent via operationId.
+      tags: [Sales]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operationId]
+              properties:
+                operationId:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Sale confirmed
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /sales/{id}/payments:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get sale receipts with running balance (AR)
+      tags: [Payments]
+      responses:
+        "200":
+          description: Payment summary
+    post:
+      summary: Record sale receipt (AR). Overpayment rejected. Idempotent.
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+      responses:
+        "201":
+          description: Receipt recorded
+
+  # ── Payments ──────────────────────────────────────────────────────────────────
+
+  /payments/{id}/void:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: |
+        Void a payment — Boss/Admin only.
+        Creates an auditable VOIDED record. Does NOT delete payment history.
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Voided
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /payments/outstanding:
+    get:
+      summary: List outstanding payment balances (AP and AR)
+      tags: [Payments]
+      parameters:
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [purchase, sale]
+      responses:
+        "200":
+          description: Outstanding balances
+
+  /payments/due:
+    get:
+      summary: List overdue payments (past credit due date)
+      tags: [Payments]
+      responses:
+        "200":
+          description: Overdue payments
+
+  # ── Reconciliation ────────────────────────────────────────────────────────────
+
+  /reconciliation/sessions:
+    get:
+      summary: List reconciliation sessions
+      tags: [Reconciliation]
+      responses:
+        "200":
+          description: Sessions
+    post:
+      summary: Open a reconciliation session — Boss/Admin only
+      tags: [Reconciliation]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReconciliationSessionRequest'
+      responses:
+        "201":
+          description: Session opened
+        "422":
+          description: Period overlap with existing open session
+
+  /reconciliation/sessions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get session with verifications and adjustments
+      tags: [Reconciliation]
+      responses:
+        "200":
+          description: Session detail
+
+  /reconciliation/sessions/{id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: Record physical KG counts — computes system vs physical discrepancy
+      tags: [Reconciliation]
+      responses:
+        "200":
+          description: Verifications recorded
+
+  /reconciliation/sessions/{id}/adjustments:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: Create stock adjustment to resolve a discrepancy — Boss/Admin only
+      tags: [Reconciliation]
+      responses:
+        "201":
+          description: Adjustment created
+
+  /reconciliation/sessions/{id}/close:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: |
+        Close reconciliation session — Boss/Admin only.
+
+        Validates all discrepancies have been resolved.
+        Locks the reconciled period — no backdated stock entries allowed after close.
+        Cannot be undone.
+      tags: [Reconciliation]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+      responses:
+        "200":
+          description: Session closed and period locked
+        "422":
+          description: Unresolved discrepancies exist
+
+  # ── Sync ──────────────────────────────────────────────────────────────────────
+
+  /sync/push:
+    post:
+      summary: |
+        Push offline operations to server.
+
+        Each operation is processed independently:
+        - Already-applied operations return ALREADY_APPLIED (idempotent)
+        - Version mismatch triggers CONFLICT (requires human resolution)
+        - Successful operations return SYNCED
+
+        Critical: duplicate operationIds are safe — will never double-apply.
+      tags: [Sync]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncPushRequest'
+      responses:
+        "200":
+          description: Results per operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        operationId:
+                          type: string
+                          format: uuid
+                        status:
+                          type: string
+                          enum: [SYNCED, ALREADY_APPLIED, CONFLICT, FAILED]
+                        conflict:
+                          type: boolean
+
+  /sync/pull:
+    get:
+      summary: Pull server-side changes since last sync
+      tags: [Sync]
+      parameters:
+        - in: query
+          name: deviceId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: lastSyncAt
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: entityTypes
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: Changed records since lastSyncAt
+
+  /sync/conflicts:
+    get:
+      summary: List sync conflicts
+      tags: [Sync]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [OPEN, RESOLVED, REJECTED]
+            default: OPEN
+      responses:
+        "200":
+          description: Conflict list
+
+  /sync/conflicts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Get conflict detail with both versions
+      tags: [Sync]
+      responses:
+        "200":
+          description: Conflict detail
+
+  /sync/conflicts/{id}/resolve:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    post:
+      summary: |
+        Resolve a sync conflict — Boss/Admin only.
+
+        Rules:
+        - NO automatic resolution is ever applied
+        - Human MUST explicitly choose: USE_LOCAL, USE_SERVER, or MANUAL
+        - Resolution is recorded in audit trail
+        - No conflict disappears without a trace
+      tags: [Sync]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConflictRequest'
+      responses:
+        "200":
+          description: Conflict resolved
+        "422":
+          description: Already resolved
+
+  # ── Reports ───────────────────────────────────────────────────────────────────
+
+  /reports/daily-purchases:
+    get:
+      summary: Daily purchase report — total KG, money, agent breakdown, wet/dry split
+      tags: [Reports]
+      parameters:
+        - $ref: '#/components/parameters/StartDateParam'
+        - $ref: '#/components/parameters/EndDateParam'
+        - in: query
+          name: agentId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: locationId
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Purchase report
+
+  /reports/reconciliation/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdParam'
+    get:
+      summary: Reconciliation report for a specific session
+      tags: [Reports]
+      responses:
+        "200":
+          description: Reconciliation report with opening/closing KG and discrepancy
+
+  /reports/agents:
+    get:
+      summary: Agent performance — KG, money, average price
+      tags: [Reports]
+      parameters:
+        - $ref: '#/components/parameters/StartDateParam'
+        - $ref: '#/components/parameters/EndDateParam'
+      responses:
+        "200":
+          description: Agent report
+
+  /reports/payments:
+    get:
+      summary: Payment report — totals, overdue, outstanding
+      tags: [Reports]
+      responses:
+        "200":
+          description: Payment report
+
+  /reports/credit:
+    get:
+      summary: Credit report — AP and AR with due dates
+      tags: [Reports]
+      responses:
+        "200":
+          description: Credit report
+
+  /reports/processing-loss:
+    get:
+      summary: Processing loss report — input/output/loss per run, out-of-range flag
+      tags: [Reports]
+      parameters:
+        - $ref: '#/components/parameters/StartDateParam'
+        - $ref: '#/components/parameters/EndDateParam'
+      responses:
+        "200":
+          description: Loss report
+
+  # ── Audit ─────────────────────────────────────────────────────────────────────
+
+  /audit:
+    get:
+      summary: Audit log — immutable record of all important actions
+      tags: [Audit]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - in: query
+          name: entityType
+          schema:
+            type: string
+        - in: query
+          name: userId
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/StartDateParam'
+        - $ref: '#/components/parameters/EndDateParam'
+      responses:
+        "200":
+          description: Audit logs
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAGS
+# ─────────────────────────────────────────────────────────────────────────────
+
+tags:
+  - name: System
+    description: Health and system endpoints
+  - name: Auth
+    description: Authentication and session management
+  - name: Users
+    description: User management (Boss/Admin only)
+  - name: Agents
+    description: Suppliers and customers
+  - name: Reference
+    description: Reference data — locations, coffee types
+  - name: Purchases
+    description: Coffee purchase workflow (DRAFT → SUBMITTED → VERIFIED → APPROVED)
+  - name: Inventory
+    description: Batch register, stock ledger, transfers, adjustments
+  - name: Processing
+    description: Coffee transformation with full batch lineage and cost allocation
+  - name: Sales
+    description: Sales with batch-specific inventory consumption and cost capture
+  - name: Payments
+    description: Accounts payable (AP) and accounts receivable (AR)
+  - name: Reconciliation
+    description: Physical stock verification and period locking
+  - name: Sync
+    description: Offline/online synchronization with conflict management
+  - name: Reports
+    description: Authoritative reports derived from transactional data
+  - name: Audit
+    description: Immutable audit history

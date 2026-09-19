@@ -1,0 +1,999 @@
+// =============================================================================
+// CPIMS — Coffee Production and Inventory Management System
+// PostgreSQL / Prisma Schema
+// =============================================================================
+// Rules:
+//  • NUMERIC(14,3) for all KG quantities  → Decimal @db.Decimal(14,3)
+//  • NUMERIC(18,2) for all monetary values → Decimal @db.Decimal(18,2)
+//  • All IDs are UUIDs for offline safety
+//  • Every mutable record carries: version, device_id, sync_status
+//  • Posted financial/stock records are immutable (enforced by DB trigger)
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  BOSS
+  ADMIN
+  STOREKEEPER
+  VERIFIER
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCED
+  CONFLICT
+  FAILED
+}
+
+enum PurchaseStatus {
+  DRAFT
+  SUBMITTED
+  VERIFIED
+  APPROVED
+  REJECTED
+}
+
+enum CoffeeState {
+  WET
+  DRY
+  HULLED
+  SORTED
+  GRADED
+}
+
+enum BatchStatus {
+  ACTIVE
+  CONSUMED
+  PARTIALLY_CONSUMED
+  TRANSFERRED
+  ADJUSTED
+}
+
+enum LedgerMovementType {
+  PURCHASE_RECEIPT
+  PROCESSING_CONSUMPTION
+  PROCESSING_OUTPUT
+  SALE_CONSUMPTION
+  TRANSFER_OUT
+  TRANSFER_IN
+  STOCK_ADJUSTMENT_INCREASE
+  STOCK_ADJUSTMENT_DECREASE
+  REVERSAL
+}
+
+enum ProcessingStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum SaleStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+enum PaymentType {
+  PURCHASE_PAYMENT  // AP — money paid TO supplier
+  SALE_RECEIPT      // AR — money received FROM customer
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  MOBILE_MONEY
+  CHEQUE
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  VOIDED
+}
+
+enum ReconciliationStatus {
+  OPEN
+  PENDING_ADJUSTMENTS
+  CLOSED
+}
+
+enum SyncOperationType {
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE
+  CONFIRM
+  COMPLETE
+  VOID
+}
+
+enum SyncConflictStatus {
+  OPEN
+  RESOLVED
+  REJECTED
+}
+
+enum StockAdjustmentDirection {
+  INCREASE
+  DECREASE
+}
+
+enum CreditTerms {
+  CASH
+  NET_7
+  NET_14
+  NET_30
+  NET_60
+  CUSTOM
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  username      String   @unique @db.VarChar(100)
+  email         String   @unique @db.VarChar(255)
+  passwordHash  String   @db.VarChar(255)
+  role          UserRole
+  fullName      String   @db.VarChar(255)
+  isActive      Boolean  @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  version       Int      @default(1)
+  deviceId      String?  @db.VarChar(255)
+  syncStatus    SyncStatus @default(SYNCED)
+
+  // Relations
+  refreshTokens      RefreshToken[]
+  purchasesCreated   Purchase[]       @relation("PurchaseCreatedBy")
+  purchasesVerified  Purchase[]       @relation("PurchaseVerifiedBy")
+  purchasesApproved  Purchase[]       @relation("PurchaseApprovedBy")
+  purchasesRejected  Purchase[]       @relation("PurchaseRejectedBy")
+  batchesCreated     Batch[]
+  ledgerEntries      StockLedger[]
+  processingsCreated ProcessingRun[]
+  salesCreated       Sale[]
+  paymentsCreated    Payment[]
+  reconciliationsOpened ReconciliationSession[] @relation("OpenedBy")
+  reconciliationsClosed ReconciliationSession[] @relation("ClosedBy")
+  stockAdjustments   StockAdjustment[]
+  syncConflictsResolved SyncConflict[]
+  auditLogs          AuditLog[]
+  transfersCreated   InventoryTransfer[]
+  advancesGiven      AgentAdvance[]  @relation("AdvanceGivenBy")
+  advancesApproved   AgentAdvance[]  @relation("AdvanceApprovedBy")
+  advancesVoided     AgentAdvance[]  @relation("AdvanceVoidedBy")
+
+  @@index([role])
+  @@index([isActive])
+  @@map("users")
+}
+
+model RefreshToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  tokenHash   String   @unique @db.VarChar(512)
+  deviceId    String?  @db.VarChar(255)
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENTS / SUPPLIERS & CUSTOMERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Agent {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(255)
+  phone       String?  @db.VarChar(50)
+  email       String?  @db.VarChar(255)
+  address     String?  @db.Text
+  photoUrl    String?  @db.VarChar(500)   // profile picture URL or base64
+  isSupplier  Boolean  @default(true)
+  isCustomer  Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  notes       String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  version     Int      @default(1)
+  deviceId    String?  @db.VarChar(255)
+  syncStatus  SyncStatus @default(SYNCED)
+
+  purchases Purchase[]
+  sales     Sale[]
+  advances  AgentAdvance[]
+  expenses  AgentExpense[]
+
+  @@index([isSupplier])
+  @@index([isCustomer])
+  @@index([isActive])
+  @@map("agents")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOCATIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Location {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(255)
+  description String?  @db.Text
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  batches              Batch[]
+  stockLedger          StockLedger[]
+  purchases            Purchase[]
+  reconciliationSessions ReconciliationSession[]
+  transfersFrom        InventoryTransfer[] @relation("TransferFrom")
+  transfersTo          InventoryTransfer[] @relation("TransferTo")
+
+  @@map("locations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COFFEE TYPES / GRADES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CoffeeType {
+  id          String      @id @default(uuid()) @db.Uuid
+  code        String      @unique @db.VarChar(50)
+  name        String      @db.VarChar(255)
+  grade       String?     @db.VarChar(100)
+  state       CoffeeState
+  description String?     @db.Text
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  purchaseItems   PurchaseItem[]
+  batches         Batch[]
+  processingOutputSpecs ProcessingOutputSpec[]
+
+  @@map("coffee_types")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PURCHASES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Purchase {
+  id              String         @id @default(uuid()) @db.Uuid
+  purchaseNumber  String         @unique @db.VarChar(50)
+  agentId         String         @db.Uuid
+  locationId      String         @db.Uuid
+  purchaseDate    DateTime       @db.Date
+  status          PurchaseStatus @default(DRAFT)
+  creditTerms     CreditTerms    @default(CASH)
+  creditDueDays   Int?           // set by Boss/Admin if CUSTOM
+  creditDueDate   DateTime?      @db.Date
+  currency        String         @default("KES") @db.VarChar(10)
+  notes           String?        @db.Text
+
+  // Workflow metadata
+  submittedAt     DateTime?
+  submittedBy     String?        @db.Uuid
+  verifiedAt      DateTime?
+  verifiedById    String?        @db.Uuid
+  approvedAt      DateTime?
+  approvedById    String?        @db.Uuid
+  rejectedAt      DateTime?
+  rejectedById    String?        @db.Uuid
+  rejectionReason String?        @db.Text
+
+  // Idempotency
+  approvalOperationId String?    @unique @db.VarChar(255)
+
+  // Sync metadata
+  createdById     String         @db.Uuid
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  version         Int            @default(1)
+  deviceId        String?        @db.VarChar(255)
+  syncStatus      SyncStatus     @default(SYNCED)
+
+  agent        Agent          @relation(fields: [agentId], references: [id])
+  location     Location       @relation(fields: [locationId], references: [id])
+  createdBy    User           @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
+  verifiedBy   User?          @relation("PurchaseVerifiedBy", fields: [verifiedById], references: [id])
+  approvedBy   User?          @relation("PurchaseApprovedBy", fields: [approvedById], references: [id])
+  rejectedBy   User?          @relation("PurchaseRejectedBy", fields: [rejectedById], references: [id])
+
+  items        PurchaseItem[]
+  batches      Batch[]
+  payments     Payment[]
+  expenses     AgentExpense[]
+
+  @@index([agentId])
+  @@index([locationId])
+  @@index([status])
+  @@index([purchaseDate])
+  @@index([createdById])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id             String      @id @default(uuid()) @db.Uuid
+  purchaseId     String      @db.Uuid
+  coffeeTypeId   String      @db.Uuid
+  quantityKg     Decimal     @db.Decimal(14, 3)
+  unitPriceKg    Decimal     @db.Decimal(18, 2)
+  totalPrice     Decimal     @db.Decimal(18, 2)
+  moistureContent Decimal?   @db.Decimal(5, 2)  // % moisture for wet coffee
+  notes          String?     @db.Text
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  purchase   Purchase   @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  coffeeType CoffeeType @relation(fields: [coffeeTypeId], references: [id])
+  batches    Batch[]
+
+  @@index([purchaseId])
+  @@index([coffeeTypeId])
+  @@map("purchase_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCHES
+// The physical inventory identity. Each batch has a unique digital identity
+// even when physically co-located with other batches.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Batch {
+  id               String      @id @default(uuid()) @db.Uuid
+  batchCode        String      @unique @db.VarChar(100)
+  purchaseId       String?     @db.Uuid       // null for processing-output batches
+  purchaseItemId   String?     @db.Uuid       // null for processing-output batches
+  coffeeTypeId     String      @db.Uuid
+  locationId       String      @db.Uuid
+  originalKg       Decimal     @db.Decimal(14, 3)
+  remainingKg      Decimal     @db.Decimal(14, 3)
+  // Cost basis per KG — allocated from purchase price or processing cost
+  costPerKg        Decimal     @db.Decimal(18, 4)
+  totalCost        Decimal     @db.Decimal(18, 2)
+  status           BatchStatus @default(ACTIVE)
+  notes            String?     @db.Text
+
+  // Processing lineage — if this batch was produced by a processing run
+  processingRunId  String?     @db.Uuid
+
+  createdById      String      @db.Uuid
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  version          Int         @default(1)
+  deviceId         String?     @db.VarChar(255)
+  syncStatus       SyncStatus  @default(SYNCED)
+
+  purchase        Purchase?    @relation(fields: [purchaseId], references: [id])
+  purchaseItem    PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
+  coffeeType      CoffeeType   @relation(fields: [coffeeTypeId], references: [id])
+  location        Location     @relation(fields: [locationId], references: [id])
+  createdBy       User         @relation(fields: [createdById], references: [id])
+  processingRun   ProcessingRun? @relation("OutputBatches", fields: [processingRunId], references: [id])
+
+  ledgerEntries          StockLedger[]
+  processingInputLines   ProcessingInput[]
+  saleItems              SaleItem[]
+  stockAdjustments       StockAdjustment[]
+  batchLineageAsOutput   BatchLineage[]    @relation("LineageOutput")
+  batchLineageAsInput    BatchLineage[]    @relation("LineageInput")
+  transferLinesFrom      TransferLine[]    @relation("TransferLineFrom")
+  transferLinesTo        TransferLine[]    @relation("TransferLineTo")
+
+  @@index([purchaseId])
+  @@index([locationId])
+  @@index([coffeeTypeId])
+  @@index([status])
+  @@index([processingRunId])
+  @@map("batches")
+}
+
+// BatchLineage records the exact input→output relationship for processing runs.
+// This preserves complete coffee origin traceability.
+model BatchLineage {
+  id              String   @id @default(uuid()) @db.Uuid
+  processingRunId String   @db.Uuid
+  inputBatchId    String   @db.Uuid
+  outputBatchId   String   @db.Uuid
+  // What fraction of this input batch's KG went into this output batch
+  inputKgUsed     Decimal  @db.Decimal(14, 3)
+  outputKgCredit  Decimal  @db.Decimal(14, 3)
+  createdAt       DateTime @default(now())
+
+  processingRun ProcessingRun @relation(fields: [processingRunId], references: [id])
+  inputBatch    Batch         @relation("LineageInput",  fields: [inputBatchId],  references: [id])
+  outputBatch   Batch         @relation("LineageOutput", fields: [outputBatchId], references: [id])
+
+  @@unique([processingRunId, inputBatchId, outputBatchId])
+  @@index([inputBatchId])
+  @@index([outputBatchId])
+  @@map("batch_lineage")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STOCK LEDGER — immutable append-only inventory event log
+// ─────────────────────────────────────────────────────────────────────────────
+
+model StockLedger {
+  id              String              @id @default(uuid()) @db.Uuid
+  batchId         String              @db.Uuid
+  locationId      String              @db.Uuid
+  quantityKg      Decimal             @db.Decimal(14, 3)  // positive=in, negative=out
+  movementType    LedgerMovementType
+  // Exactly one of these must be non-null (enforced by DB CHECK constraint)
+  purchaseId      String?             @db.Uuid
+  processingRunId String?             @db.Uuid
+  saleId          String?             @db.Uuid
+  transferId      String?             @db.Uuid
+  adjustmentId    String?             @db.Uuid
+  reversalOfId    String?             @db.Uuid  // references another StockLedger.id
+
+  performedById   String              @db.Uuid
+  deviceId        String?             @db.VarChar(255)
+  operationId     String              @db.VarChar(255)  // idempotency key
+  notes           String?             @db.Text
+
+  // These are intentionally NOT updatable after insert (enforced by DB trigger)
+  postedAt        DateTime            @default(now())
+  version         Int                 @default(1)
+
+  batch       Batch    @relation(fields: [batchId], references: [id])
+  location    Location @relation(fields: [locationId], references: [id])
+  performedBy User     @relation(fields: [performedById], references: [id])
+
+  @@unique([operationId])
+  @@index([batchId])
+  @@index([locationId])
+  @@index([movementType])
+  @@index([postedAt])
+  @@index([purchaseId])
+  @@index([saleId])
+  @@index([processingRunId])
+  @@map("stock_ledger")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCESSING
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ProcessingRun {
+  id                 String          @id @default(uuid()) @db.Uuid
+  runCode            String          @unique @db.VarChar(100)
+  status             ProcessingStatus @default(DRAFT)
+  locationId         String?         @db.Uuid
+  startedAt          DateTime?
+  completedAt        DateTime?
+  notes              String?         @db.Text
+
+  totalInputKg       Decimal?        @db.Decimal(14, 3)
+  totalOutputKg      Decimal?        @db.Decimal(14, 3)
+  lossKg             Decimal?        @db.Decimal(14, 3)
+  lossPct            Decimal?        @db.Decimal(7, 4)
+  lossOutOfRange     Boolean         @default(false)
+  processingCost     Decimal?        @db.Decimal(18, 2)
+  processingCostNotes String?        @db.Text
+
+  // Idempotency
+  completionOperationId String?      @unique @db.VarChar(255)
+
+  createdById        String          @db.Uuid
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  version            Int             @default(1)
+  deviceId           String?         @db.VarChar(255)
+  syncStatus         SyncStatus      @default(SYNCED)
+
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  inputs       ProcessingInput[]
+  outputBatches Batch[]           @relation("OutputBatches")
+  lineage      BatchLineage[]
+
+  @@index([status])
+  @@index([createdById])
+  @@map("processing_runs")
+}
+
+model ProcessingInput {
+  id              String   @id @default(uuid()) @db.Uuid
+  processingRunId String   @db.Uuid
+  batchId         String   @db.Uuid
+  quantityKg      Decimal  @db.Decimal(14, 3)
+  costPerKg       Decimal  @db.Decimal(18, 4)  // captured at time of processing
+  totalCost       Decimal  @db.Decimal(18, 2)
+  createdAt       DateTime @default(now())
+
+  processingRun ProcessingRun @relation(fields: [processingRunId], references: [id])
+  batch         Batch         @relation(fields: [batchId], references: [id])
+
+  @@unique([processingRunId, batchId])
+  @@index([processingRunId])
+  @@index([batchId])
+  @@map("processing_inputs")
+}
+
+// Optional: if we want to define expected output coffee types before completion
+model ProcessingOutputSpec {
+  id              String     @id @default(uuid()) @db.Uuid
+  processingRunId String     @db.Uuid
+  coffeeTypeId    String     @db.Uuid
+  expectedKg      Decimal?   @db.Decimal(14, 3)
+
+  coffeeType CoffeeType @relation(fields: [coffeeTypeId], references: [id])
+
+  @@index([processingRunId])
+  @@map("processing_output_specs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SALES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Sale {
+  id             String     @id @default(uuid()) @db.Uuid
+  saleNumber     String     @unique @db.VarChar(50)
+  agentId        String     @db.Uuid   // customer
+  locationId     String?    @db.Uuid
+  saleDate       DateTime   @db.Date
+  status         SaleStatus @default(DRAFT)
+  currency       String     @default("KES") @db.VarChar(10)
+  creditTerms    CreditTerms @default(CASH)
+  creditDueDays  Int?
+  creditDueDate  DateTime?  @db.Date
+  notes          String?    @db.Text
+  confirmedAt    DateTime?
+  confirmedById  String?    @db.Uuid
+
+  // Idempotency
+  confirmationOperationId String? @unique @db.VarChar(255)
+
+  totalKg        Decimal?   @db.Decimal(14, 3)
+  totalSaleAmount Decimal?  @db.Decimal(18, 2)
+  totalCostAmount Decimal?  @db.Decimal(18, 2)
+  grossMargin    Decimal?   @db.Decimal(18, 2)
+
+  createdById    String     @db.Uuid
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  version        Int        @default(1)
+  deviceId       String?    @db.VarChar(255)
+  syncStatus     SyncStatus @default(SYNCED)
+
+  agent       Agent    @relation(fields: [agentId], references: [id])
+  createdBy   User     @relation(fields: [createdById], references: [id])
+
+  items    SaleItem[]
+  payments Payment[]
+
+  @@index([agentId])
+  @@index([saleDate])
+  @@index([status])
+  @@index([createdById])
+  @@map("sales")
+}
+
+model SaleItem {
+  id            String   @id @default(uuid()) @db.Uuid
+  saleId        String   @db.Uuid
+  batchId       String   @db.Uuid
+  quantityKg    Decimal  @db.Decimal(14, 3)
+  unitSalePrice Decimal  @db.Decimal(18, 2)
+  saleAmount    Decimal  @db.Decimal(18, 2)
+  // Cost captured from batch at time of sale confirmation
+  unitCostKg    Decimal  @db.Decimal(18, 4)
+  costAmount    Decimal  @db.Decimal(18, 2)
+  grossMargin   Decimal  @db.Decimal(18, 2)
+  notes         String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  sale  Sale  @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  batch Batch @relation(fields: [batchId], references: [id])
+
+  @@index([saleId])
+  @@index([batchId])
+  @@map("sale_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT CASH ADVANCES & EXPENSES
+// The correct model for this system:
+//   Admin → gives cash advance to Agent
+//   Agent → buys coffee + has other expenses
+//   Agent → returns remaining cash to Admin
+//   System tracks: Advance - CoffeeCost - Expenses - Returned = Balance
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum AdvanceStatus {
+  PENDING    // given to agent, not yet accounted for
+  ACCOUNTED  // agent submitted expense report
+  APPROVED   // admin approved the expense report
+  VOIDED
+}
+
+enum ExpenseCategory {
+  COFFEE_PURCHASE   // cost of coffee KG × price
+  TRANSPORT         // transport to/from farm or market
+  BAGS_PACKAGING    // sacks, bags, packaging materials
+  LOADING_LABOUR    // loading/unloading labour
+  WEIGHING_FEES     // scale/weighbridge fees
+  AGENT_COMMISSION  // agent's own commission if any
+  OTHER
+}
+
+model AgentAdvance {
+  id              String        @id @default(uuid()) @db.Uuid
+  advanceNumber   String        @unique @db.VarChar(50)
+  agentId         String        @db.Uuid
+  amount          Decimal       @db.Decimal(18, 2)
+  currency        String        @default("ETB") @db.VarChar(10)
+  advanceDate     DateTime      @db.Date
+  paymentMethod   PaymentMethod
+  reference       String?       @db.VarChar(255)
+  notes           String?       @db.Text
+  status          AdvanceStatus @default(PENDING)
+
+  // What the agent returned after expenses
+  returnedAmount  Decimal?      @db.Decimal(18, 2)
+  returnedDate    DateTime?     @db.Date
+  returnedMethod  PaymentMethod?
+  returnReference String?       @db.VarChar(255)
+
+  // Approval
+  approvedById    String?       @db.Uuid
+  approvedAt      DateTime?
+  voidedById      String?       @db.Uuid
+  voidedAt        DateTime?
+  voidReason      String?       @db.Text
+
+  // Idempotency
+  operationId     String        @unique @db.VarChar(255)
+
+  givenById       String        @db.Uuid
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  version         Int           @default(1)
+
+  agent       Agent          @relation(fields: [agentId],    references: [id])
+  givenBy     User           @relation("AdvanceGivenBy",     fields: [givenById],    references: [id])
+  approvedBy  User?          @relation("AdvanceApprovedBy",  fields: [approvedById], references: [id])
+  voidedBy    User?          @relation("AdvanceVoidedBy",    fields: [voidedById],   references: [id])
+
+  expenses    AgentExpense[]
+
+  @@index([agentId])
+  @@index([advanceDate])
+  @@index([status])
+  @@map("agent_advances")
+}
+
+model AgentExpense {
+  id              String          @id @default(uuid()) @db.Uuid
+  advanceId       String          @db.Uuid
+  agentId         String          @db.Uuid
+  purchaseId      String?         @db.Uuid  // linked purchase if expense = coffee cost
+  category        ExpenseCategory
+  amount          Decimal         @db.Decimal(18, 2)
+  currency        String          @default("ETB") @db.VarChar(10)
+  description     String          @db.Text
+  receiptRef      String?         @db.VarChar(255)
+  expenseDate     DateTime        @db.Date
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  advance   AgentAdvance @relation(fields: [advanceId], references: [id], onDelete: Cascade)
+  agent     Agent        @relation(fields: [agentId],   references: [id])
+  purchase  Purchase?    @relation(fields: [purchaseId],references: [id])
+
+  @@index([advanceId])
+  @@index([agentId])
+  @@index([purchaseId])
+  @@map("agent_expenses")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYMENTS
+// Kept for sale receipts (AR) — money received from customers
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Payment {
+  id              String        @id @default(uuid()) @db.Uuid
+  paymentNumber   String        @unique @db.VarChar(50)
+  paymentType     PaymentType
+  paymentMethod   PaymentMethod
+  status          PaymentStatus @default(PENDING)
+  // Exactly one of these must be set
+  purchaseId      String?       @db.Uuid
+  saleId          String?       @db.Uuid
+  amount          Decimal       @db.Decimal(18, 2)
+  currency        String        @default("KES") @db.VarChar(10)
+  paymentDate     DateTime      @db.Date
+  dueDate         DateTime?     @db.Date   // controlled by Boss/Admin
+  reference       String?       @db.VarChar(255)
+  notes           String?       @db.Text
+
+  // Reversal linkage
+  voidedAt        DateTime?
+  voidedById      String?       @db.Uuid
+  voidReason      String?       @db.Text
+  reversalOfId    String?       @db.Uuid  // references another Payment.id
+
+  // Idempotency
+  operationId     String        @unique @db.VarChar(255)
+
+  createdById     String        @db.Uuid
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  version         Int           @default(1)
+  deviceId        String?       @db.VarChar(255)
+  syncStatus      SyncStatus    @default(SYNCED)
+
+  purchase  Purchase? @relation(fields: [purchaseId], references: [id])
+  sale      Sale?     @relation(fields: [saleId], references: [id])
+  createdBy User      @relation(fields: [createdById], references: [id])
+
+  @@index([purchaseId])
+  @@index([saleId])
+  @@index([paymentType])
+  @@index([status])
+  @@index([dueDate])
+  @@index([paymentDate])
+  @@map("payments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STOCK ADJUSTMENTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model StockAdjustment {
+  id                     String                   @id @default(uuid()) @db.Uuid
+  adjustmentNumber       String                   @unique @db.VarChar(50)
+  batchId                String                   @db.Uuid
+  direction              StockAdjustmentDirection
+  quantityKg             Decimal                  @db.Decimal(14, 3)
+  reason                 String                   @db.Text
+  reconciliationSessionId String?                 @db.Uuid
+  // Idempotency
+  operationId            String                   @unique @db.VarChar(255)
+
+  createdById  String     @db.Uuid
+  createdAt    DateTime   @default(now())
+  version      Int        @default(1)
+  deviceId     String?    @db.VarChar(255)
+  syncStatus   SyncStatus @default(SYNCED)
+
+  batch                Batch                 @relation(fields: [batchId], references: [id])
+  createdBy            User                  @relation(fields: [createdById], references: [id])
+  reconciliationSession ReconciliationSession? @relation(fields: [reconciliationSessionId], references: [id])
+
+  @@index([batchId])
+  @@index([reconciliationSessionId])
+  @@map("stock_adjustments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INVENTORY TRANSFERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model InventoryTransfer {
+  id             String   @id @default(uuid()) @db.Uuid
+  transferNumber String   @unique @db.VarChar(50)
+  fromLocationId String   @db.Uuid
+  toLocationId   String   @db.Uuid
+  transferDate   DateTime @db.Date
+  notes          String?  @db.Text
+  operationId    String   @unique @db.VarChar(255)
+
+  createdById String     @db.Uuid
+  createdAt   DateTime   @default(now())
+  version     Int        @default(1)
+  deviceId    String?    @db.VarChar(255)
+  syncStatus  SyncStatus @default(SYNCED)
+
+  fromLocation Location      @relation("TransferFrom", fields: [fromLocationId], references: [id])
+  toLocation   Location      @relation("TransferTo",   fields: [toLocationId],   references: [id])
+  createdBy    User          @relation(fields: [createdById], references: [id])
+  lines        TransferLine[]
+
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@map("inventory_transfers")
+}
+
+model TransferLine {
+  id         String   @id @default(uuid()) @db.Uuid
+  transferId String   @db.Uuid
+  // Source batch in from-location
+  fromBatchId String  @db.Uuid
+  // New batch created in to-location
+  toBatchId   String  @db.Uuid
+  quantityKg  Decimal @db.Decimal(14, 3)
+  createdAt   DateTime @default(now())
+
+  transfer   InventoryTransfer @relation(fields: [transferId], references: [id])
+  fromBatch  Batch             @relation("TransferLineFrom", fields: [fromBatchId], references: [id])
+  toBatch    Batch             @relation("TransferLineTo",   fields: [toBatchId],   references: [id])
+
+  @@index([transferId])
+  @@map("transfer_lines")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RECONCILIATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ReconciliationSession {
+  id           String               @id @default(uuid()) @db.Uuid
+  sessionCode  String               @unique @db.VarChar(50)
+  locationId   String?              @db.Uuid
+  periodStart  DateTime             @db.Date
+  periodEnd    DateTime             @db.Date
+  status       ReconciliationStatus @default(OPEN)
+  notes        String?              @db.Text
+  openedById   String               @db.Uuid
+  openedAt     DateTime             @default(now())
+  closedById   String?              @db.Uuid
+  closedAt     DateTime?
+
+  location Location? @relation(fields: [locationId], references: [id])
+  openedBy User      @relation("OpenedBy", fields: [openedById], references: [id])
+  closedBy User?     @relation("ClosedBy", fields: [closedById], references: [id])
+
+  verifications  ReconciliationVerification[]
+  adjustments    StockAdjustment[]
+  lockedPeriods  LockedPeriod[]
+
+  @@index([locationId])
+  @@index([status])
+  @@index([periodStart, periodEnd])
+  @@map("reconciliation_sessions")
+}
+
+// Per-batch physical count recorded during reconciliation
+model ReconciliationVerification {
+  id                     String   @id @default(uuid()) @db.Uuid
+  reconciliationSessionId String  @db.Uuid
+  batchId                String?  @db.Uuid   // null means general location count
+  systemKg               Decimal  @db.Decimal(14, 3)
+  physicalKg             Decimal  @db.Decimal(14, 3)
+  differenceKg           Decimal  @db.Decimal(14, 3)
+  notes                  String?  @db.Text
+  verifiedById           String   @db.Uuid
+  verifiedAt             DateTime @default(now())
+
+  reconciliationSession ReconciliationSession @relation(fields: [reconciliationSessionId], references: [id])
+
+  @@index([reconciliationSessionId])
+  @@map("reconciliation_verifications")
+}
+
+// A locked period prevents backdated stock ledger entries
+model LockedPeriod {
+  id                     String   @id @default(uuid()) @db.Uuid
+  reconciliationSessionId String  @db.Uuid
+  locationId             String?  @db.Uuid
+  periodStart            DateTime @db.Date
+  periodEnd              DateTime @db.Date
+  lockedAt               DateTime @default(now())
+  lockedById             String   @db.Uuid
+
+  reconciliationSession ReconciliationSession @relation(fields: [reconciliationSessionId], references: [id])
+
+  @@index([locationId, periodStart, periodEnd])
+  @@map("locked_periods")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYNC OPERATIONS & CONFLICTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SyncOperation {
+  id            String            @id @default(uuid()) @db.Uuid
+  operationId   String            @unique @db.VarChar(255)  // client-generated UUID
+  entityType    String            @db.VarChar(100)
+  entityId      String            @db.Uuid
+  operationType SyncOperationType
+  baseVersion   Int
+  payload       Json
+  deviceId      String            @db.VarChar(255)
+  status        SyncStatus        @default(PENDING)
+  appliedAt     DateTime?
+  errorMessage  String?           @db.Text
+  createdAt     DateTime          @default(now())
+
+  @@index([deviceId])
+  @@index([entityType, entityId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("sync_operations")
+}
+
+model SyncConflict {
+  id             String             @id @default(uuid()) @db.Uuid
+  entityType     String             @db.VarChar(100)
+  entityId       String             @db.Uuid
+  localVersion   Int
+  serverVersion  Int
+  localPayload   Json
+  serverPayload  Json
+  deviceId       String             @db.VarChar(255)
+  status         SyncConflictStatus @default(OPEN)
+  resolvedById   String?            @db.Uuid
+  resolvedAt     DateTime?
+  resolution     String?            @db.Text
+  operationId    String             @db.VarChar(255)  // the sync op that caused the conflict
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  resolvedBy User? @relation(fields: [resolvedById], references: [id])
+
+  @@index([status])
+  @@index([entityType, entityId])
+  @@index([deviceId])
+  @@map("sync_conflicts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDIT LOGS — append-only
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String?  @db.Uuid
+  action       String   @db.VarChar(100)
+  entityType   String   @db.VarChar(100)
+  entityId     String?  @db.VarChar(255)
+  previousValue Json?
+  newValue      Json?
+  ipAddress    String?  @db.VarChar(45)
+  deviceId     String?  @db.VarChar(255)
+  operationId  String?  @db.VarChar(255)
+  requestId    String?  @db.VarChar(255)
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCE COUNTERS (for human-readable codes like PUR-0001)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SequenceCounter {
+  name      String @id @db.VarChar(50)
+  lastValue Int    @default(0)
+
+  @@map("sequence_counters")
+}
