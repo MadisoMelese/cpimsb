@@ -83,24 +83,26 @@ async function seed() {
 
   // ─── Coffee types ──────────────────────────────────────────────────────────
   // Grade = rank (1 = highest, 2 = medium, 3 = lower)
-  // Wet types (cherry coffee delivered fresh by agents)
   const coffeeTypes = [
-    // Wet cherry — Grade 1 (best, large uniform beans, minimal defects)
-    { code: 'CW-G1', name: 'Cherry Wet Grade 1', grade: '1', state: 'WET',  description: 'Highest quality wet cherry — uniform size, <3% defects' },
-    // Wet cherry — Grade 2
-    { code: 'CW-G2', name: 'Cherry Wet Grade 2', grade: '2', state: 'WET',  description: 'Medium quality wet cherry — 3–10% defects' },
-    // Wet cherry — Grade 3
-    { code: 'CW-G3', name: 'Cherry Wet Grade 3', grade: '3', state: 'WET',  description: 'Lower quality wet cherry — >10% defects' },
-    // Dry parchment — Grade 1
-    { code: 'CD-G1', name: 'Parchment Dry Grade 1', grade: '1', state: 'DRY', description: 'Highest quality sun-dried parchment' },
-    // Dry parchment — Grade 2
-    { code: 'CD-G2', name: 'Parchment Dry Grade 2', grade: '2', state: 'DRY', description: 'Medium quality parchment' },
-    // Dry parchment — Grade 3
-    { code: 'CD-G3', name: 'Parchment Dry Grade 3', grade: '3', state: 'DRY', description: 'Lower quality parchment' },
-    // Legacy AA/AB codes for backward compat
-    { code: 'CW-AA', name: 'Cherry Wet Grade AA',     grade: 'AA', state: 'WET', description: 'Wet cherry — AA classification' },
-    { code: 'CD-AA', name: 'Parchment Dry Grade AA',  grade: 'AA', state: 'DRY', description: 'Dry parchment — AA classification' },
-    { code: 'CD-AB', name: 'Parchment Dry Grade AB',  grade: 'AB', state: 'DRY', description: 'Dry parchment — AB classification' },
+    // Wet cherry — received directly from agents (what storekeeper records)
+    { code: 'CW-G1', name: 'Cherry Wet Grade 1',    grade: '1', state: 'WET',       description: 'Highest quality wet cherry — uniform size, <3% defects' },
+    { code: 'CW-G2', name: 'Cherry Wet Grade 2',    grade: '2', state: 'WET',       description: 'Medium quality wet cherry — 3–10% defects' },
+    { code: 'CW-G3', name: 'Cherry Wet Grade 3',    grade: '3', state: 'WET',       description: 'Lower quality wet cherry — >10% defects' },
+    // Dry cherry — sun-dried received from agents
+    { code: 'CD-G1', name: 'Cherry Dry Grade 1',    grade: '1', state: 'DRY',       description: 'Highest quality sun-dried cherry' },
+    { code: 'CD-G2', name: 'Cherry Dry Grade 2',    grade: '2', state: 'DRY',       description: 'Medium quality sun-dried cherry' },
+    { code: 'CD-G3', name: 'Cherry Dry Grade 3',    grade: '3', state: 'DRY',       description: 'Lower quality sun-dried cherry' },
+    // Parchment — output after wet processing (Admin only)
+    { code: 'CP-G1', name: 'Parchment Grade 1',     grade: '1', state: 'PARCHMENT', description: 'Wet-processed parchment — Grade 1' },
+    { code: 'CP-G2', name: 'Parchment Grade 2',     grade: '2', state: 'PARCHMENT', description: 'Wet-processed parchment — Grade 2' },
+    // Green bean — output after hulling (Admin only)
+    { code: 'CG-G1', name: 'Green Bean Grade 1',    grade: '1', state: 'GREEN',     description: 'Green bean ready for export — Grade 1' },
+    { code: 'CG-G2', name: 'Green Bean Grade 2',    grade: '2', state: 'GREEN',     description: 'Green bean ready for export — Grade 2' },
+    { code: 'CG-G3', name: 'Green Bean Grade 3',    grade: '3', state: 'GREEN',     description: 'Green bean — Grade 3' },
+    // Legacy AA/AB codes
+    { code: 'CW-AA', name: 'Cherry Wet Grade AA',   grade: 'AA', state: 'WET',      description: 'Wet cherry — AA classification' },
+    { code: 'CD-AA', name: 'Parchment Dry Grade AA',grade: 'AA', state: 'DRY',      description: 'Dry parchment — AA classification' },
+    { code: 'CD-AB', name: 'Parchment Dry Grade AB',grade: 'AB', state: 'DRY',      description: 'Dry parchment — AB classification' },
   ];
 
   for (const ct of coffeeTypes) {

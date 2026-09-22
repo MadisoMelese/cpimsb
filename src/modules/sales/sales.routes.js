@@ -9,10 +9,11 @@ const { createSaleSchema, confirmSaleSchema, paginationSchema } = require('../..
 
 router.use(authenticate);
 
-router.post('/',           validate(createSaleSchema),           ctrl.createSale);
-router.get('/',            validate(paginationSchema, 'query'),  ctrl.listSales);
-router.get('/:id',                                                ctrl.getSale);
-router.post('/:id/confirm', validate(confirmSaleSchema),         ctrl.confirmSale);
-router.post('/:id/cancel',  authorize('BOSS', 'ADMIN'),          ctrl.cancelSale);
+// Sales are BOSS/ADMIN only — Storekeeper only does receiving (purchases)
+router.post('/',            authorize('BOSS', 'ADMIN'), validate(createSaleSchema),          ctrl.createSale);
+router.get('/',             authorize('BOSS', 'ADMIN'), validate(paginationSchema, 'query'), ctrl.listSales);
+router.get('/:id',          authorize('BOSS', 'ADMIN'),                                      ctrl.getSale);
+router.post('/:id/confirm', authorize('BOSS', 'ADMIN'), validate(confirmSaleSchema),         ctrl.confirmSale);
+router.post('/:id/cancel',  authorize('BOSS', 'ADMIN'),                                      ctrl.cancelSale);
 
 module.exports = router;

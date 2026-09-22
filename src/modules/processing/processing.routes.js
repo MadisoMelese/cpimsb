@@ -15,11 +15,13 @@ const {
 
 router.use(authenticate);
 
-router.post('/',               validate(createProcessingRunSchema),  ctrl.createRun);
-router.get('/',                validate(paginationSchema, 'query'),  ctrl.listRuns);
-router.get('/:id',                                                    ctrl.getRun);
-router.post('/:id/inputs',     validate(addProcessingInputSchema),   ctrl.addInputs);
-router.post('/:id/complete',   validate(addProcessingOutputSchema.merge(completeProcessingSchema)), ctrl.complete);
-router.post('/:id/cancel',     authorize('BOSS', 'ADMIN'),           ctrl.cancel);
+// ALL processing write operations are BOSS/ADMIN only
+// Storekeeper can only VIEW processing runs
+router.post('/',             authorize('BOSS', 'ADMIN'), validate(createProcessingRunSchema),  ctrl.createRun);
+router.get('/',              validate(paginationSchema, 'query'),  ctrl.listRuns);
+router.get('/:id',                                                  ctrl.getRun);
+router.post('/:id/inputs',   authorize('BOSS', 'ADMIN'), validate(addProcessingInputSchema),   ctrl.addInputs);
+router.post('/:id/complete', authorize('BOSS', 'ADMIN'), validate(addProcessingOutputSchema.merge(completeProcessingSchema)), ctrl.complete);
+router.post('/:id/cancel',   authorize('BOSS', 'ADMIN'),           ctrl.cancel);
 
 module.exports = router;

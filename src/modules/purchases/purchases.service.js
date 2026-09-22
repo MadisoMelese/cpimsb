@@ -287,6 +287,37 @@ function getDefaultDays(creditTerms) {
   return map[creditTerms] || 0;
 }
 
+/**
+ * Admin sets grade (via coffee type change on items) and payment terms
+ * AFTER purchase is approved — done during reconciliation review.
+ */
+async function setGradePayment(id, data) {
+  const purchase = await getPurchaseById(id);
+
+  const updateData = {};
+  if (data.creditTerms)   updateData.creditTerms   = data.creditTerms;
+  if (data.creditDueDays) updateData.creditDueDays = data.creditDueDays;
+  if (data.notes)         updateData.notes         = data.notes;
+
+  // creditDueDate: either explicitly provided or computed from creditDueDays
+  if (data.creditDueDate) {
+    updateData.creditDueDate = new Date(data.creditDueDate);
+  } else if (data.creditTerms && data.creditTerms !== 'CASH') {
+    const days = data.creditDueDays || getDefaultDays(data.creditTerms);
+    const base = new Date(purchase.purchaseDate);
+    base.setDate(base.getDate() + days);
+    updateData.creditDueDate = base;
+  } else if (data.creditTerms === 'CASH') {
+    updateData.creditDueDate = null;
+  }
+
+  return prisma.purchase.update({
+    where: { id },
+    data:  { ...updateData, version: { increment: 1 } },
+    include: { items: { include: { coffeeType: true } }, agent: true },
+  });
+}
+
 module.exports = {
   createPurchase,
   listPurchases,
@@ -296,4 +327,5 @@ module.exports = {
   verifyPurchase,
   approvePurchase,
   rejectPurchase,
+  setGradePayment,
 };

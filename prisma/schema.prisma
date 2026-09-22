@@ -46,11 +46,13 @@ enum PurchaseStatus {
 }
 
 enum CoffeeState {
-  WET
-  DRY
-  HULLED
-  SORTED
-  GRADED
+  WET       // Fresh cherry coffee just picked — received from agents
+  DRY       // Sun-dried cherry coffee
+  PARCHMENT // Wet-processed, still in parchment skin
+  HULLED    // Parchment removed, green bean exposed
+  GREEN     // Green bean — ready for export or roasting
+  SORTED    // Graded and sorted green bean
+  GRADED    // Final export grade
 }
 
 enum BatchStatus {

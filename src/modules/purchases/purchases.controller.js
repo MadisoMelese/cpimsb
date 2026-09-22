@@ -4,7 +4,13 @@ const svc = require('./purchases.service');
 
 async function createPurchase(req, res, next) {
   try {
-    const purchase = await svc.createPurchase(req.body, req.user.id);
+    const data = { ...req.body };
+    // STOREKEEPER cannot set credit terms — always forced to CASH
+    if (req.user.role === 'STOREKEEPER') {
+      data.creditTerms    = 'CASH';
+      data.creditDueDays  = undefined;
+    }
+    const purchase = await svc.createPurchase(data, req.user.id);
     res.status(201).json({ success: true, data: purchase });
   } catch (err) { next(err); }
 }
@@ -51,7 +57,15 @@ async function rejectPurchase(req, res, next) {
   } catch (err) { next(err); }
 }
 
+async function setGradePayment(req, res, next) {
+  try {
+    const result = await svc.setGradePayment(req.params.id, req.body);
+    res.json({ success: true, data: result });
+  } catch (err) { next(err); }
+}
+
 module.exports = {
   createPurchase, listPurchases, getPurchase, updatePurchase,
   submitPurchase, verifyPurchase, approvePurchase, rejectPurchase,
+  setGradePayment,
 };
