@@ -22,8 +22,25 @@ const dateStringSchema = z
   .transform((s) => new Date(s));
 
 const paginationSchema = z.object({
-  page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().min(1).max(200).default(50),
+  page:       z.coerce.number().int().positive().default(1),
+  limit:      z.coerce.number().int().min(1).max(200).default(50),
+  // Common filter/search params — passed through to service layer
+  search:     z.string().max(255).optional(),
+  status:     z.string().max(50).optional(),
+  agentId:    z.string().uuid().optional(),
+  locationId: z.string().uuid().optional(),
+  startDate:  z.string().optional(),
+  endDate:    z.string().optional(),
+  isSupplier: z.string().optional(),
+  isCustomer: z.string().optional(),
+  includeInactive: z.string().optional(),
+  role:       z.string().optional(),
+  isActive:   z.string().optional(),
+  coffeeTypeId: z.string().uuid().optional(),
+  purchaseId: z.string().uuid().optional(),
+  movementType: z.string().optional(),
+  batchId:    z.string().uuid().optional(),
+  deviceId:   z.string().optional(),
 });
 
 // ─── Auth ───────────────────────────────────────────────────────────────────

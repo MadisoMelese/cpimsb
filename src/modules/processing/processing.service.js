@@ -43,6 +43,12 @@ async function listProcessingRuns(query) {
   const { page, limit } = query;
   const where = {};
   if (query.status) where.status = query.status;
+  if (query.search) {
+    where.OR = [
+      { runCode: { contains: query.search, mode: 'insensitive' } },
+      { notes:   { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
 
   const [runs, total] = await prisma.$transaction([
     prisma.processingRun.findMany({

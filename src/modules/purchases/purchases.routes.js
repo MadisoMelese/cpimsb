@@ -32,6 +32,7 @@ router.post('/:id/reject',  authorize('BOSS', 'ADMIN'),             validate(rej
 // Admin-only: set grade and payment terms during reconciliation review
 router.patch('/:id/grade-payment', authorize('BOSS', 'ADMIN'),
   validate(require('zod').z.object({
+    grade:         require('zod').z.string().max(10).nullable().optional(),
     creditTerms:   require('zod').z.enum(['CASH','NET_7','NET_14','NET_30','NET_60','CUSTOM']).optional(),
     creditDueDays: require('zod').z.number().int().positive().optional(),
     creditDueDate: require('zod').z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

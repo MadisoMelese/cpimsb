@@ -62,6 +62,13 @@ async function listSales(query) {
     if (query.startDate) where.saleDate.gte = new Date(query.startDate);
     if (query.endDate)   where.saleDate.lte = new Date(query.endDate);
   }
+  if (query.search) {
+    where.OR = [
+      { saleNumber: { contains: query.search, mode: 'insensitive' } },
+      { agent:      { name: { contains: query.search, mode: 'insensitive' } } },
+      { notes:      { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
 
   const [sales, total] = await prisma.$transaction([
     prisma.sale.findMany({

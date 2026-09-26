@@ -28,8 +28,15 @@ async function createUser(data) {
 async function listUsers(query) {
   const { page, limit } = query;
   const where = {};
-  if (query.role) where.role = query.role;
+  if (query.role)     where.role     = query.role;
   if (query.isActive !== undefined) where.isActive = query.isActive;
+  if (query.search) {
+    where.OR = [
+      { fullName: { contains: query.search, mode: 'insensitive' } },
+      { username: { contains: query.search, mode: 'insensitive' } },
+      { email:    { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
 
   const [users, total] = await prisma.$transaction([
     prisma.user.findMany({

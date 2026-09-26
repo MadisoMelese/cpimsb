@@ -62,6 +62,14 @@ async function listAdvances(query) {
     if (query.startDate) where.advanceDate.gte = new Date(query.startDate);
     if (query.endDate)   where.advanceDate.lte = new Date(query.endDate);
   }
+  if (query.search) {
+    where.OR = [
+      { advanceNumber: { contains: query.search, mode: 'insensitive' } },
+      { agent:         { name: { contains: query.search, mode: 'insensitive' } } },
+      { agent:         { code: { contains: query.search, mode: 'insensitive' } } },
+      { notes:         { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
 
   const [advances, total] = await prisma.$transaction([
     prisma.agentAdvance.findMany({

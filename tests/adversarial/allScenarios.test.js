@@ -1,20 +1,5 @@
 'use strict';
 
-/**
- * ADVERSARIAL TEST SCENARIOS — All 15 from spec section 41
- * ==========================================================
- * Tests that verify the system cannot be broken by:
- * - concurrent operations
- * - duplicate submissions
- * - retries after timeout
- * - invalid state transitions
- * - period violations
- * - immutability violations
- *
- * These are pure logic / guard tests (no DB required).
- * Integration versions of these same scenarios exist in tests/integration/.
- */
-
 const {
   InsufficientStockError,
   IdempotencyConflictError,

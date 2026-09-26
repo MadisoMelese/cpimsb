@@ -75,6 +75,16 @@ async function listPurchases(query) {
     if (query.startDate) where.purchaseDate.gte = new Date(query.startDate);
     if (query.endDate)   where.purchaseDate.lte = new Date(query.endDate);
   }
+  if (query.search) {
+    where.OR = [
+      { purchaseNumber: { contains: query.search, mode: 'insensitive' } },
+      { agent:   { name: { contains: query.search, mode: 'insensitive' } } },
+      { agent:   { code: { contains: query.search, mode: 'insensitive' } } },
+      { agent:   { phone: { contains: query.search } } },
+      { location:{ name: { contains: query.search, mode: 'insensitive' } } },
+      { notes:   { contains: query.search, mode: 'insensitive' } },
+    ];
+  }
 
   const [purchases, total] = await prisma.$transaction([
     prisma.purchase.findMany({
@@ -288,18 +298,19 @@ function getDefaultDays(creditTerms) {
 }
 
 /**
- * Admin sets grade (via coffee type change on items) and payment terms
- * AFTER purchase is approved — done during reconciliation review.
+ * Admin sets grade and payment terms AFTER purchase is approved.
+ * Done during reconciliation review.
+ * Grade is stored on the batches created from this purchase (via coffeeType update).
  */
 async function setGradePayment(id, data) {
   const purchase = await getPurchaseById(id);
 
   const updateData = {};
-  if (data.creditTerms)   updateData.creditTerms   = data.creditTerms;
-  if (data.creditDueDays) updateData.creditDueDays = data.creditDueDays;
-  if (data.notes)         updateData.notes         = data.notes;
+  if (data.creditTerms !== undefined) updateData.creditTerms   = data.creditTerms;
+  if (data.creditDueDays)             updateData.creditDueDays = data.creditDueDays;
+  if (data.notes !== undefined)       updateData.notes         = data.notes;
 
-  // creditDueDate: either explicitly provided or computed from creditDueDays
+  // Compute creditDueDate
   if (data.creditDueDate) {
     updateData.creditDueDate = new Date(data.creditDueDate);
   } else if (data.creditTerms && data.creditTerms !== 'CASH') {
@@ -309,6 +320,25 @@ async function setGradePayment(id, data) {
     updateData.creditDueDate = base;
   } else if (data.creditTerms === 'CASH') {
     updateData.creditDueDate = null;
+  }
+
+  // If grade provided, update all batches from this purchase
+  // by updating the coffeeType.grade for each unique coffeeType used
+  if (data.grade !== undefined) {
+    const grade = data.grade || null; // empty string = clear grade
+    // Get all unique coffeeType IDs used in this purchase's batches
+    const batches = await prisma.batch.findMany({
+      where: { purchaseId: id },
+      select: { coffeeTypeId: true },
+    });
+    const coffeeTypeIds = [...new Set(batches.map(b => b.coffeeTypeId))];
+
+    for (const ctId of coffeeTypeIds) {
+      await prisma.coffeeType.update({
+        where: { id: ctId },
+        data:  { grade },
+      });
+    }
   }
 
   return prisma.purchase.update({

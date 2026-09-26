@@ -13,10 +13,17 @@ const { subtract } = require('../../common/utils/decimal');
 async function listBatches(query) {
   const { page, limit } = query;
   const where = {};
-  if (query.locationId)  where.locationId  = query.locationId;
+  if (query.locationId)   where.locationId   = query.locationId;
   if (query.coffeeTypeId) where.coffeeTypeId = query.coffeeTypeId;
-  if (query.status)      where.status      = query.status;
-  if (query.purchaseId)  where.purchaseId  = query.purchaseId;
+  if (query.status)       where.status       = query.status;
+  if (query.purchaseId)   where.purchaseId   = query.purchaseId;
+  if (query.search) {
+    where.OR = [
+      { batchCode:   { contains: query.search, mode: 'insensitive' } },
+      { coffeeType:  { name: { contains: query.search, mode: 'insensitive' } } },
+      { location:    { name: { contains: query.search, mode: 'insensitive' } } },
+    ];
+  }
 
   const [batches, total] = await prisma.$transaction([
     prisma.batch.findMany({
