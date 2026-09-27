@@ -21,4 +21,11 @@ router.post('/:id/change-password',
   ctrl.changePassword,
 );
 
+// Admin-only: manually set a user's password
+router.post('/:id/reset-password',
+  authorize('BOSS', 'ADMIN'),
+  validate(z.object({ password: z.string().min(8).max(255) })),
+  ctrl.adminResetPassword,
+);
+
 module.exports = router;

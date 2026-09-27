@@ -2,6 +2,7 @@
 
 const authService = require('./auth.service');
 const prisma      = require('../../database/prismaClient');
+const config      = require('../../config');
 
 async function login(req, res, next) {
   try {
@@ -50,4 +51,27 @@ async function me(req, res, next) {
   }
 }
 
-module.exports = { login, refresh, logout, me };
+async function forgotPassword(req, res, next) {
+  try {
+    const { email } = req.body;
+    // Derive app base URL from request so it works in any environment
+    const appBaseUrl = req.headers.origin || `${req.protocol}://${req.get('host')}`.replace(/\/api$/, '');
+    await authService.requestPasswordReset(email, appBaseUrl);
+    // Always 200 — never reveal whether the email exists
+    res.json({ success: true, message: 'If that email is registered, a reset link has been sent.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function resetPassword(req, res, next) {
+  try {
+    const { token, password } = req.body;
+    await authService.resetPasswordByToken(token, password);
+    res.json({ success: true, message: 'Password reset successfully. You can now sign in.' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { login, refresh, logout, me, forgotPassword, resetPassword };

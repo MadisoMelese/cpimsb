@@ -12,8 +12,6 @@ async function createUser(req, res, next) {
 async function listUsers(req, res, next) {
   try {
     const result = await usersService.listUsers(req.query);
-    // console.log("users", result)
-
     res.json({ success: true, ...result });
   } catch (err) { next(err); }
 }
@@ -39,4 +37,11 @@ async function changePassword(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { createUser, listUsers, getUser, updateUser, changePassword };
+async function adminResetPassword(req, res, next) {
+  try {
+    const result = await usersService.adminResetPassword(req.params.id, req.body.password);
+    res.json({ success: true, ...result });
+  } catch (err) { next(err); }
+}
+
+module.exports = { createUser, listUsers, getUser, updateUser, changePassword, adminResetPassword };

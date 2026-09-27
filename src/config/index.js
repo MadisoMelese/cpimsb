@@ -72,6 +72,15 @@ const config = {
     lossMaxPct: optionalInt('PROCESSING_LOSS_MAX_PCT', 30),
   },
 
+  email: {
+    host:     optional('SMTP_HOST', 'smtp.gmail.com'),
+    port:     optionalInt('SMTP_PORT', 587),
+    secure:   optional('SMTP_SECURE', 'false') === 'true',
+    user:     optional('SMTP_USER', ''),
+    pass:     optional('SMTP_PASS', ''),
+    from:     optional('SMTP_FROM', 'CPIMS <noreply@cpims.app>'),
+  },
+
   isDev: optional('NODE_ENV', 'development') === 'development',
   isProd: optional('NODE_ENV', 'development') === 'production',
 };

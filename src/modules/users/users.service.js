@@ -90,4 +90,26 @@ async function changePassword(id, newPassword) {
   });
 }
 
-module.exports = { createUser, listUsers, getUserById, updateUser, changePassword };
+// ─── Admin: manually set a user's password ───────────────────────────────────
+
+async function adminResetPassword(userId, newPassword) {
+  await getUserById(userId); // throws 404 if not found
+
+  const hash = await authService.hashPassword(newPassword);
+
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: userId },
+      data:  { passwordHash: hash, version: { increment: 1 } },
+    }),
+    // Revoke all existing refresh tokens so the user is forced to re-login
+    prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data:  { revokedAt: new Date() },
+    }),
+  ]);
+
+  return { message: 'Password updated. The user will be signed out on their next request.' };
+}
+
+module.exports = { createUser, listUsers, getUserById, updateUser, changePassword, adminResetPassword };
