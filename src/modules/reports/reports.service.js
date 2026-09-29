@@ -124,12 +124,16 @@ async function agentPerformanceReport({ startDate, endDate, agentId }) {
     where:   { isSupplier: true, isActive: true },
     include: {
       purchases: {
-        where:   purchaseWhere,
+        where:   { ...purchaseWhere, status: { not: 'REJECTED' } },
         include: {
           items:    { include: { coffeeType: true } },
           location: { select: { id: true, name: true, code: true } },
           payments: { where: { status: 'COMPLETED' }, select: { amount: true } },
         },
+      },
+      advances: {
+        where:  { status: { not: 'VOIDED' } },
+        select: { amount: true, returnedAmount: true },
       },
     },
     orderBy: { name: 'asc' },
@@ -140,11 +144,10 @@ async function agentPerformanceReport({ startDate, endDate, agentId }) {
     const totalKg    = sumKg(allItems);
     const totalMoney = sumPrice(allItems);
 
-    // Balance only applies to credit purchases — CASH purchases are paid on delivery
-    const creditPurchases = a.purchases.filter(p => p.creditTerms !== 'CASH');
-    const creditMoney     = sumPrice(creditPurchases.flatMap(p => p.items));
-    const totalPaid       = sumPaid(a.purchases.flatMap(p => p.payments));
-    const balance         = creditMoney - totalPaid;
+    const totalPaid   = sumPaid(a.purchases.flatMap(p => p.payments));
+    const netAdvanced = a.advances.reduce((s, adv) =>
+      s + parseFloat(adv.amount) - parseFloat(adv.returnedAmount || 0), 0);
+    const balance     = totalMoney - totalPaid - netAdvanced;
 
     // KG by grade
     const byGrade = {};
@@ -216,17 +219,23 @@ async function individualAgentReport(agentId, { startDate, endDate } = {}) {
     ...(dtWhere ? { purchaseDate: dtWhere } : {}),
   };
 
-  const purchases = await prisma.purchase.findMany({
-    where:   purchaseWhere,
-    include: {
-      location: { select: { id: true, name: true, code: true } },
-      items:    { include: { coffeeType: true } },
-      payments: { where: { status: 'COMPLETED' } },
-      createdBy:  { select: { fullName: true } },
-      approvedBy: { select: { fullName: true } },
-    },
-    orderBy: { purchaseDate: 'desc' },
-  });
+  const [purchases, advances] = await Promise.all([
+    prisma.purchase.findMany({
+      where:   purchaseWhere,
+      include: {
+        location: { select: { id: true, name: true, code: true } },
+        items:    { include: { coffeeType: true } },
+        payments: { where: { status: 'COMPLETED' } },
+        createdBy:  { select: { fullName: true } },
+        approvedBy: { select: { fullName: true } },
+      },
+      orderBy: { purchaseDate: 'desc' },
+    }),
+    prisma.agentAdvance.findMany({
+      where:  { agentId, status: { not: 'VOIDED' } },
+      select: { amount: true, returnedAmount: true },
+    }),
+  ]);
 
   // ── aggregate across all purchases
   let totalKg = 0, totalMoney = 0, totalPaid = 0;
@@ -309,7 +318,9 @@ async function individualAgentReport(agentId, { startDate, endDate } = {}) {
     };
   });
 
-  const balance = totalMoney - totalPaid;
+  const netAdvanced = advances.reduce((s, adv) =>
+    s + parseFloat(adv.amount) - parseFloat(adv.returnedAmount || 0), 0);
+  const balance = totalMoney - totalPaid - netAdvanced;
 
   return {
     agent: {
@@ -324,14 +335,15 @@ async function individualAgentReport(agentId, { startDate, endDate } = {}) {
       endDate:   endDate   || null,
     },
     summary: {
-      purchaseCount: purchases.length,
-      totalKg:       totalKg.toFixed(3),
-      wetKg:         wetKg.toFixed(3),
-      dryKg:         dryKg.toFixed(3),
-      totalMoney:    totalMoney.toFixed(2),
-      totalPaid:     totalPaid.toFixed(2),
-      balance:       balance.toFixed(2),
-      avgPriceKg:    totalKg > 0 ? (totalMoney / totalKg).toFixed(2) : '0.00',
+      purchaseCount:  purchases.length,
+      totalKg:        totalKg.toFixed(3),
+      wetKg:          wetKg.toFixed(3),
+      dryKg:          dryKg.toFixed(3),
+      totalMoney:     totalMoney.toFixed(2),
+      totalPaid:      totalPaid.toFixed(2),
+      totalAdvanced:  netAdvanced.toFixed(2),
+      balance:        balance.toFixed(2),
+      avgPriceKg:     totalKg > 0 ? (totalMoney / totalKg).toFixed(2) : '0.00',
     },
     byGrade:    Object.values(byGrade).map(g => ({ ...g, totalKg: g.totalKg.toFixed(3), totalMoney: g.totalMoney.toFixed(2) })),
     byType:     Object.values(byType).map(t => ({ ...t, totalKg: t.totalKg.toFixed(3), totalMoney: t.totalMoney.toFixed(2) })),
@@ -423,25 +435,62 @@ async function paymentReport({ startDate, endDate }) {
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
 
-  const overduePurchases = await prisma.purchase.findMany({
-    where: { status: 'APPROVED', creditDueDate: { lt: today }, creditTerms: { not: 'CASH' } },
-    select: { purchaseNumber: true, creditDueDate: true, agent: { select: { name: true } }, items: { select: { totalPrice: true } }, payments: { where: { status: 'COMPLETED' }, select: { amount: true } } },
+  // Load all agents who are suppliers, with their purchases, payments, and advances
+  const agents = await prisma.agent.findMany({
+    where: { isSupplier: true },
+    select: {
+      id:   true,
+      name: true,
+      code: true,
+      purchases: {
+        where:  { status: { not: 'REJECTED' } },
+        select: {
+          id:            true,
+          purchaseNumber:true,
+          creditDueDate: true,
+          creditTerms:   true,
+          items:    { select: { totalPrice: true } },
+          payments: { where: { status: 'COMPLETED' }, select: { amount: true } },
+        },
+      },
+      advances: {
+        where:  { status: { not: 'VOIDED' } },
+        select: { amount: true, returnedAmount: true },
+      },
+    },
   });
 
-  const overdue = overduePurchases.map(p => {
-    const total = sumPrice(p.items), paid = sumPaid(p.payments);
-    return { purchaseNumber: p.purchaseNumber, agentName: p.agent?.name, creditDueDate: p.creditDueDate, remainingAmount: (total - paid).toFixed(2) };
-  }).filter(p => parseFloat(p.remainingAmount) > 0);
+  const overdue     = [];  // agents holding unaccounted advance cash
+  const outstanding = [];  // agents whose purchases exceed what's been paid/advanced
 
-  const outstandingPurchases = await prisma.purchase.findMany({
-    where: { status: 'APPROVED', creditTerms: { not: 'CASH' } },
-    select: { purchaseNumber: true, creditDueDate: true, agent: { select: { name: true } }, items: { select: { totalPrice: true } }, payments: { where: { status: 'COMPLETED' }, select: { amount: true } } },
-  });
+  for (const agent of agents) {
+    const totalPurchases = agent.purchases.reduce((s, p) => s + sumPrice(p.items), 0);
+    const totalPaid      = agent.purchases.reduce((s, p) => s + sumPaid(p.payments), 0);
+    const netAdvanced    = agent.advances.reduce(
+      (s, adv) => s + parseFloat(adv.amount) - parseFloat(adv.returnedAmount || 0), 0,
+    );
 
-  const outstanding = outstandingPurchases.map(p => {
-    const total = sumPrice(p.items), paid = sumPaid(p.payments);
-    return { purchaseNumber: p.purchaseNumber, agentName: p.agent?.name, creditDueDate: p.creditDueDate, remainingAmount: (total - paid).toFixed(2) };
-  }).filter(p => parseFloat(p.remainingAmount) > 0);
+    // balance > 0 → we still owe agent (outstanding)
+    // balance < 0 → agent holds excess advance cash (overdue accountability)
+    const agentBalance = totalPurchases - totalPaid - netAdvanced;
+
+    if (agentBalance > 0.005) {
+      // We owe the agent — outstanding
+      outstanding.push({
+        agentName:       agent.name,
+        agentCode:       agent.code,
+        remainingAmount: agentBalance.toFixed(2),
+      });
+    } else if (agentBalance < -0.005) {
+      // Agent holds more advance cash than purchases justify — overdue return
+      overdue.push({
+        agentName:  agent.name,
+        agentCode:  agent.code,
+        cashInHand: Math.abs(agentBalance).toFixed(2),
+      });
+    }
+    // agentBalance within ±0.005 = fully settled, show nothing
+  }
 
   return {
     summary: {
@@ -458,15 +507,65 @@ async function paymentReport({ startDate, endDate }) {
 
 async function creditReport() {
   const purchases = await prisma.purchase.findMany({
-    where: { status: 'APPROVED', creditTerms: { not: 'CASH' } },
-    select: { purchaseNumber: true, creditDueDate: true, agentId: true, agent: { select: { name: true } }, items: { select: { totalPrice: true } }, payments: { where: { status: 'COMPLETED' }, select: { amount: true } } },
+    where: { status: { not: 'REJECTED' } },
+    select: {
+      purchaseNumber: true,
+      creditDueDate:  true,
+      agentId:        true,
+      agent: {
+        select: {
+          name: true,
+          advances: {
+            where:  { status: { not: 'VOIDED' } },
+            select: { amount: true, returnedAmount: true },
+          },
+        },
+      },
+      items:    { select: { totalPrice: true } },
+      payments: { where: { status: 'COMPLETED' }, select: { amount: true } },
+    },
     orderBy: { creditDueDate: 'asc' },
   });
 
-  const purchaseCredit = purchases.map(p => {
-    const total = sumPrice(p.items), paid = sumPaid(p.payments);
-    return { purchaseNumber: p.purchaseNumber, agentName: p.agent?.name, creditDueDate: p.creditDueDate, totalAmount: total.toFixed(2), totalPaid: paid.toFixed(2), remainingAmount: (total - paid).toFixed(2) };
-  }).filter(p => parseFloat(p.remainingAmount) > 0);
+  // Pre-compute net advance per agent
+  const agentNetAdv = {};
+  for (const p of purchases) {
+    if (!agentNetAdv[p.agentId]) {
+      agentNetAdv[p.agentId] = (p.agent.advances || []).reduce(
+        (s, adv) => s + parseFloat(adv.amount) - parseFloat(adv.returnedAmount || 0), 0,
+      );
+    }
+  }
+
+  // Pre-compute agent total purchases and paid
+  const agentTotals = {};
+  for (const p of purchases) {
+    if (!agentTotals[p.agentId]) agentTotals[p.agentId] = { total: 0, paid: 0 };
+    agentTotals[p.agentId].total += sumPrice(p.items);
+    agentTotals[p.agentId].paid  += sumPaid(p.payments);
+  }
+
+  const purchaseCredit = purchases
+    .map(p => {
+      const total        = sumPrice(p.items);
+      const paid         = sumPaid(p.payments);
+      const netAdv       = agentNetAdv[p.agentId] || 0;
+      const agentBalance = agentTotals[p.agentId].total - agentTotals[p.agentId].paid - netAdv;
+
+      // Only list if agent still has outstanding balance AND this purchase has unpaid amount
+      const remaining = total - paid;
+      if (agentBalance <= 0.005 || remaining <= 0.005) return null;
+
+      return {
+        purchaseNumber:  p.purchaseNumber,
+        agentName:       p.agent?.name,
+        creditDueDate:   p.creditDueDate,
+        totalAmount:     total.toFixed(2),
+        totalPaid:       paid.toFixed(2),
+        remainingAmount: remaining.toFixed(2),
+      };
+    })
+    .filter(Boolean);
 
   const sales = await prisma.sale.findMany({
     where: { status: 'CONFIRMED', creditTerms: { not: 'CASH' } },

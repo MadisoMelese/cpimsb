@@ -44,38 +44,72 @@ async function getAgentById(id) {
 
 /**
  * Get an agent with full stats: total purchases, total KG, total money,
- * payment balance, and recent purchase history.
+ * outstanding balance (accounting for both payments AND cash advances),
+ * and recent purchase history.
+ *
+ * Balance formula:
+ *   netAdvanced  = totalAdvanced − returnedCash
+ *   purchasedAmt = all non-REJECTED purchases (DRAFT/SUBMITTED/VERIFIED/APPROVED)
+ *   balance      = purchasedAmt − totalPaid − netAdvanced
+ *
+ * A positive balance means we still owe the agent money.
+ * A negative balance means the agent holds more cash than the purchase value
+ * (advance exceeds purchases — agent should return the difference).
+ *
+ * We include non-approved purchases because the advance is committed the moment
+ * a purchase is created — the approval workflow is internal, not financial.
  */
 async function getAgentWithStats(id) {
   const agent = await getAgentById(id);
 
-  const purchases = await prisma.purchase.findMany({
-    where:   { agentId: id, status: 'APPROVED' },
-    include: {
-      items:    { include: { coffeeType: true } },
-      payments: { where: { status: 'COMPLETED' }, select: { amount: true } },
-      location: { select: { name: true } },
-    },
-    orderBy: { purchaseDate: 'desc' },
-  });
+  const [purchases, advances] = await Promise.all([
+    prisma.purchase.findMany({
+      where:   { agentId: id, status: { not: 'REJECTED' } },
+      include: {
+        items:    { include: { coffeeType: true } },
+        payments: { where: { status: 'COMPLETED' }, select: { amount: true } },
+        location: { select: { name: true } },
+      },
+      orderBy: { purchaseDate: 'desc' },
+    }),
+    prisma.agentAdvance.findMany({
+      where:   { agentId: id, status: { not: 'VOIDED' } },
+      select:  { id: true, advanceNumber: true, amount: true, advanceDate: true,
+                 paymentMethod: true, status: true, returnedAmount: true },
+      orderBy: { advanceDate: 'desc' },
+    }),
+  ]);
 
   let totalKg = 0, totalMoney = 0, totalPaid = 0;
+  let approvedCount = 0;
   for (const p of purchases) {
+    const pMoney = p.items.reduce((a, i) => a + parseFloat(i.totalPrice), 0);
     totalKg    += p.items.reduce((a, i) => a + parseFloat(i.quantityKg), 0);
-    totalMoney += p.items.reduce((a, i) => a + parseFloat(i.totalPrice), 0);
+    totalMoney += pMoney;
     totalPaid  += p.payments.reduce((a, py) => a + parseFloat(py.amount), 0);
+    if (p.status === 'APPROVED') approvedCount++;
   }
+
+  const totalAdvanced = advances.reduce((a, adv) => a + parseFloat(adv.amount), 0);
+  const totalReturned = advances.reduce((a, adv) => a + parseFloat(adv.returnedAmount || 0), 0);
+  const netAdvanced   = totalAdvanced - totalReturned;
+
+  // balance > 0  → we still owe agent
+  // balance < 0  → agent holds excess cash (advance > purchases)
+  const balance = totalMoney - totalPaid - netAdvanced;
 
   return {
     ...agent,
     stats: {
-      purchaseCount: purchases.length,
-      totalKg:       totalKg.toFixed(3),
-      totalMoney:    totalMoney.toFixed(2),
-      totalPaid:     totalPaid.toFixed(2),
-      balance:       (totalMoney - totalPaid).toFixed(2),
-      avgPriceKg:    totalKg > 0 ? (totalMoney / totalKg).toFixed(2) : '0.00',
+      purchaseCount:  approvedCount,
+      totalKg:        totalKg.toFixed(3),
+      totalMoney:     totalMoney.toFixed(2),
+      totalPaid:      totalPaid.toFixed(2),
+      totalAdvanced:  netAdvanced.toFixed(2),
+      balance:        balance.toFixed(2),
+      avgPriceKg:     totalKg > 0 ? (totalMoney / totalKg).toFixed(2) : '0.00',
     },
+    recentAdvances:  advances.slice(0, 5),
     recentPurchases: purchases.slice(0, 10),
   };
 }
