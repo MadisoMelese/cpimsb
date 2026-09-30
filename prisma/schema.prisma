@@ -384,6 +384,11 @@ model Batch {
   status           BatchStatus @default(ACTIVE)
   notes            String?     @db.Text
 
+  // Grade assigned by admin (1, 2, 3, etc.) — per-batch, set after approval
+  grade            String?     @db.VarChar(20)
+  // Certificate image from the Coffee Ministry — uploaded once batch is fully consumed
+  certificateImageUrl String?  @db.VarChar(1000)
+
   // Processing lineage — if this batch was produced by a processing run
   processingRunId  String?     @db.Uuid
 

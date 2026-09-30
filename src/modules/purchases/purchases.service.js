@@ -230,7 +230,7 @@ async function approvePurchase(id, operationId, userId) {
       // Create one batch per purchase item
       const createdBatches = [];
       for (const item of items) {
-        const batchCode = await nextCode(prisma, 'batch', 'BAT');
+        const batchCode = await nextCode(prisma, 'batch', 'BATCH', 5);
         const costPerKg = item.unitPriceKg;
         const totalCost = item.totalPrice;
 
@@ -322,23 +322,13 @@ async function setGradePayment(id, data) {
     updateData.creditDueDate = null;
   }
 
-  // If grade provided, update all batches from this purchase
-  // by updating the coffeeType.grade for each unique coffeeType used
+  // If grade provided, update all batches from this purchase directly
   if (data.grade !== undefined) {
     const grade = data.grade || null; // empty string = clear grade
-    // Get all unique coffeeType IDs used in this purchase's batches
-    const batches = await prisma.batch.findMany({
+    await prisma.batch.updateMany({
       where: { purchaseId: id },
-      select: { coffeeTypeId: true },
+      data:  { grade },
     });
-    const coffeeTypeIds = [...new Set(batches.map(b => b.coffeeTypeId))];
-
-    for (const ctId of coffeeTypeIds) {
-      await prisma.coffeeType.update({
-        where: { id: ctId },
-        data:  { grade },
-      });
-    }
   }
 
   return prisma.purchase.update({

@@ -135,7 +135,7 @@ async function createTransfer(data, userId) {
         });
 
         // Create a new batch at the destination location
-        const newBatchCode = await nextCode(prisma, 'batch', 'BAT');
+        const newBatchCode = await nextCode(prisma, 'batch', 'BATCH', 5);
         const newBatch = await tx.batch.create({
           data: {
             id:           uuidv4(),
@@ -215,16 +215,18 @@ async function getInventoryOverview(locationId) {
     },
   });
 
-  // Group by location + coffeeType
+  // Group by location + coffeeType + grade (grade is now per-batch)
   const summary = {};
   for (const b of batches) {
-    const key = `${b.locationId}:${b.coffeeTypeId}`;
+    const key = `${b.locationId}:${b.coffeeTypeId}:${b.grade || ''}`;
     if (!summary[key]) {
       summary[key] = {
         locationId:    b.locationId,
         locationName:  b.location.name,
         coffeeTypeId:  b.coffeeTypeId,
         coffeeTypeName: b.coffeeType.name,
+        grade:         b.grade || null,
+        state:         b.coffeeType.state,
         totalKg:       0,
         totalCost:     0,
         batchCount:    0,
@@ -238,6 +240,39 @@ async function getInventoryOverview(locationId) {
   return Object.values(summary);
 }
 
+// ─── Batch grading (admin) ────────────────────────────────────────────────────
+
+async function gradeBatch(id, grade) {
+  const batch = await prisma.batch.findUnique({ where: { id } });
+  if (!batch) throw new NotFoundError('Batch', id);
+
+  return prisma.batch.update({
+    where: { id },
+    data:  { grade: grade || null, version: { increment: 1 } },
+    include: { coffeeType: true, location: true },
+  });
+}
+
+// ─── Certificate image upload (admin, only when CONSUMED) ─────────────────────
+
+async function uploadCertificate(id, imageUrl) {
+  const batch = await prisma.batch.findUnique({ where: { id } });
+  if (!batch) throw new NotFoundError('Batch', id);
+
+  if (batch.status !== 'CONSUMED') {
+    throw new BusinessRuleError(
+      'BATCH_NOT_CONSUMED',
+      'Certificate can only be uploaded after the batch is fully sold out (CONSUMED)',
+    );
+  }
+
+  return prisma.batch.update({
+    where: { id },
+    data:  { certificateImageUrl: imageUrl, version: { increment: 1 } },
+    include: { coffeeType: true, location: true },
+  });
+}
+
 module.exports = {
   listBatches,
   getBatchById,
@@ -245,4 +280,6 @@ module.exports = {
   createTransfer,
   createAdjustment,
   getInventoryOverview,
+  gradeBatch,
+  uploadCertificate,
 };

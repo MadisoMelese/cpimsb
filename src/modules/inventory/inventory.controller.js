@@ -1,6 +1,7 @@
 'use strict';
 
 const svc = require('./inventory.service');
+const { z } = require('zod');
 
 async function getOverview(req, res, next) {
   try {
@@ -38,5 +39,19 @@ async function createAdjustment(req, res, next) {
     res.status(201).json({ success: true, data: result });
   } catch (err) { next(err); }
 }
+async function gradeBatch(req, res, next) {
+  try {
+    const { grade } = req.body;
+    const data = await svc.gradeBatch(req.params.id, grade);
+    res.json({ success: true, data });
+  } catch (err) { next(err); }
+}
+async function uploadCertificate(req, res, next) {
+  try {
+    const { imageUrl } = req.body;
+    const data = await svc.uploadCertificate(req.params.id, imageUrl);
+    res.json({ success: true, data });
+  } catch (err) { next(err); }
+}
 
-module.exports = { getOverview, listBatches, getBatch, listLedger, createTransfer, createAdjustment };
+module.exports = { getOverview, listBatches, getBatch, listLedger, createTransfer, createAdjustment, gradeBatch, uploadCertificate };
